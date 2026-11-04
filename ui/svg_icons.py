@@ -349,6 +349,38 @@ SVG_DEFS = {
         <rect x="9" y="9" width="6" height="6" rx="1.5" fill="#10b981"/>
         <path d="M 9 2 L 9 5 M 15 2 L 15 5 M 9 19 L 9 22 M 15 19 L 15 22 M 2 9 L 5 9 M 2 15 L 5 15 M 19 9 L 22 9 M 19 15 L 22 15" stroke="#059669" stroke-width="1.5" stroke-linecap="round"/>
     </svg>
+    """,
+
+    "image": """
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
+        <rect x="3" y="4" width="18" height="16" rx="3" fill="#eff6ff" stroke="#2563eb" stroke-width="1.8"/>
+        <circle cx="8" cy="8.5" r="1.5" fill="#f59e0b"/>
+        <path d="M 3 17 L 9 12 L 14 16 L 17 13 L 21 17" fill="none" stroke="#2563eb" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+    """,
+
+    "video": """
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
+        <rect x="3" y="5" width="13" height="14" rx="2.5" fill="#fdf2f8" stroke="#db2777" stroke-width="1.8"/>
+        <polygon points="16,10 21,7 21,17 16,14" fill="#f472b6" stroke="#db2777" stroke-width="1.6" stroke-linejoin="round"/>
+        <circle cx="9.5" cy="12" r="2.5" fill="#db2777"/>
+    </svg>
+    """,
+
+    "eye": """
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
+        <path d="M 2 12 C 5 6, 19 6, 22 12 C 19 18, 5 18, 2 12 Z" fill="#f0fdf4" stroke="#16a34a" stroke-width="1.8" stroke-linejoin="round"/>
+        <circle cx="12" cy="12" r="3.5" fill="#22c55e" stroke="#15803d" stroke-width="1.5"/>
+        <circle cx="13" cy="11" r="1" fill="#ffffff"/>
+    </svg>
+    """,
+
+    "step_test": """
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
+        <circle cx="12" cy="12" r="9" fill="#fdf4ff" stroke="#a855f7" stroke-width="1.8"/>
+        <path d="M 12 7 L 12 12 L 15 15" stroke="#9333ea" stroke-width="1.8" stroke-linecap="round"/>
+        <circle cx="12" cy="12" r="2" fill="#a855f7"/>
+    </svg>
     """
 }
 

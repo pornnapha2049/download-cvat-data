@@ -141,6 +141,16 @@ QLabel.TagNavy {
     min-height: 20px;
 }
 
+QLabel.TagTeal {
+    background-color: #ccfbf1;
+    color: #0f766e;
+    border-radius: 12px;
+    padding: 4px 14px;
+    font-weight: 700;
+    font-size: 12px;
+    min-height: 20px;
+}
+
 /* ========================================================= */
 /* Card Containers & Quote Cards                             */
 /* ========================================================= */

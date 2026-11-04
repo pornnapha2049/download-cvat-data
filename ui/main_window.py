@@ -4,11 +4,17 @@ Faithfully designed in the Pinterest Pastel Wellness & Mindfulness style:
 https://i.pinimg.com/1200x/69/a3/a3/69a3a365c2017d08d2c1ce4795633dd5.jpg
 
 Features:
-- Dedicated standalone pages with smooth forward 'Next' and '< Back' navigation (no top stepper buttons)
-- Top app bar with circular back button, centered title, bell notification, wave pill, and dancing mascot
-- Soft pastel wellness palette (slate-cream, pure white cards, deep slate navy #0f3747, matcha mint, lavender pink, butter yellow)
-- Single unified 'data/' folder architecture for all dataset operations
-- Blank CVAT server URL by default (no hardcoded initial URL)
+1. Dedicated CVAT Login Page (Standalone Step 1)
+2. Dedicated CVAT Downloader Page (Standalone Step 2)
+3. Dedicated Merge Datasets Page (Standalone Step 3)
+4. Dedicated COCO to YOLO Converter Page (Standalone Step 4)
+5. Dedicated Dataset Splitter Page (Standalone Step 5)
+6. Dedicated YOLO Auto-Trainer Page (Standalone Step 6) with weights directly renamed to [custom_name]_v[num].pt inside runs/.../weights/
+7. Dedicated Test Model / Inference Page (Standalone Step 7) for single image, folder, or video with live preview and save options
+- No top stepper buttons: clean mobile/tablet app bar with circular < Back, centered title, bell notification, mascot
+- Bottom carousel step pills (1 to 7) with < Previous and Next Step >
+- Single unified 'data/' directory architecture
+- Blank CVAT server URL by default
 """
 
 import os
@@ -17,6 +23,8 @@ import json
 import shutil
 import subprocess
 from pathlib import Path
+import numpy as np
+import cv2
 import torch
 
 from PyQt5.QtWidgets import (
@@ -24,18 +32,31 @@ from PyQt5.QtWidgets import (
     QStackedWidget, QLabel, QLineEdit, QPushButton, QComboBox, QSpinBox,
     QDoubleSpinBox, QSlider, QCheckBox, QRadioButton, QButtonGroup,
     QTableWidget, QTableWidgetItem, QHeaderView, QFileDialog, QMessageBox,
-    QProgressBar, QPlainTextEdit, QFrame, QGroupBox, QScrollArea
+    QProgressBar, QPlainTextEdit, QFrame, QGroupBox, QScrollArea, QSplitter
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize
+from PyQt5.QtGui import QImage, QPixmap
 
 from core.cvat_client import CvatClientWrapper, sanitize_filename
 from core.merger import CocoDatasetMerger
 from core.converter import CocoToYoloConverter
 from core.splitter import DatasetSplitter
 from core.trainer import YoloTrainerEngine, auto_tune_hyperparameters, get_next_run_version
+from core.tester import YoloTestEngine, IMAGE_EXTS, VIDEO_EXTS
 from ui.dancing_svg import DancingSvgMascot, AnimatedWavePill
 from ui.theme import DARK_STYLESHEET
 from ui.svg_icons import get_svg_icon, get_svg_pixmap
+
+
+def bgr_to_qpixmap(bgr_array: np.ndarray) -> QPixmap:
+    """Converts OpenCV BGR numpy array to a QPixmap."""
+    if bgr_array is None or bgr_array.size == 0:
+        return QPixmap()
+    h, w, ch = bgr_array.shape
+    bytes_per_line = ch * w
+    rgb = cv2.cvtColor(bgr_array, cv2.COLOR_BGR2RGB)
+    qimg = QImage(rgb.data, w, h, bytes_per_line, QImage.Format_RGB888)
+    return QPixmap.fromImage(qimg.copy())
 
 
 # =====================================================================
@@ -158,38 +179,31 @@ class SplitWorker(QThread):
         img_dir: Path,
         lbl_dir: Path,
         out_dir: Path,
-        r_train: float,
-        r_val: float,
-        r_test: float,
-        coco_json: Path = None
+        ratios: tuple[float, float, float],
+        copy_mode: bool
     ):
         super().__init__()
         self.splitter = splitter
         self.img_dir = img_dir
         self.lbl_dir = lbl_dir
         self.out_dir = out_dir
-        self.r_train = r_train
-        self.r_val = r_val
-        self.r_test = r_test
-        self.coco_json = coco_json
+        self.ratios = ratios
+        self.copy_mode = copy_mode
 
     def run(self):
         try:
             def cb(cur, tot, desc):
                 self.progress_signal.emit(cur, tot, desc)
 
-            res = self.splitter.split_dataset(
+            stats = self.splitter.split_dataset(
                 images_dir=self.img_dir,
                 labels_dir=self.lbl_dir,
-                output_dataset_dir=self.out_dir,
-                coco_json_path=self.coco_json,
-                train_ratio=self.r_train,
-                val_ratio=self.r_val,
-                test_ratio=self.r_test,
-                copy_files=True,
+                output_dir=self.out_dir,
+                ratios=self.ratios,
+                copy_files=self.copy_mode,
                 progress_callback=cb
             )
-            self.finished_signal.emit(res)
+            self.finished_signal.emit(stats)
         except Exception as e:
             self.error_signal.emit(str(e))
 
@@ -218,17 +232,79 @@ class TrainWorker(QThread):
             def epoch_cb(ep, tot, metrics):
                 self.epoch_signal.emit(ep, tot, metrics)
 
-            res = self.engine.train(
+            res = self.engine.train_model(
                 task=self.task,
-                model_name=self.model_name,
-                data_yaml=self.data_yaml,
-                run_name=self.run_name,
-                base_dir=self.base_dir,
+                model_name_or_path=self.model_name,
+                data_yaml_path=self.data_yaml,
+                custom_run_name=self.run_name,
+                base_runs_dir=self.base_dir,
                 hyperparams=self.hyperparams,
                 log_callback=log_cb,
                 epoch_callback=epoch_cb
             )
             self.finished_signal.emit(res)
+        except Exception as e:
+            self.error_signal.emit(str(e))
+
+
+class TestInferenceWorker(QThread):
+    progress_signal = pyqtSignal(int, int, str)
+    frame_signal = pyqtSignal(object, int, int, dict)
+    finished_signal = pyqtSignal(dict)
+    error_signal = pyqtSignal(str)
+
+    def __init__(self, engine: YoloTestEngine, mode: str, model_path: Path, src_path: Path, conf: float, iou: float, save: bool, save_dir: Path):
+        super().__init__()
+        self.engine = engine
+        self.mode = mode
+        self.model_path = model_path
+        self.src_path = src_path
+        self.conf = conf
+        self.iou = iou
+        self.save = save
+        self.save_dir = save_dir
+
+    def run(self):
+        try:
+            if self.mode == "image":
+                res = self.engine.predict_image(
+                    model_path=self.model_path,
+                    image_path=self.src_path,
+                    conf=self.conf,
+                    iou=self.iou,
+                    save=self.save,
+                    save_dir=self.save_dir,
+                )
+                self.finished_signal.emit({"mode": "image", "data": res})
+            elif self.mode == "folder":
+                def cb(cur, tot, desc):
+                    self.progress_signal.emit(cur, tot, desc)
+                res = self.engine.predict_folder(
+                    model_path=self.model_path,
+                    folder_path=self.src_path,
+                    conf=self.conf,
+                    iou=self.iou,
+                    save=self.save,
+                    save_dir=self.save_dir,
+                    progress_callback=cb,
+                )
+                self.finished_signal.emit({"mode": "folder", "data": res})
+            elif self.mode == "video":
+                def pcb(cur, tot, desc):
+                    self.progress_signal.emit(cur, tot, desc)
+                def fcb(frame, cur, tot, summary):
+                    self.frame_signal.emit(frame, cur, tot, summary)
+                res = self.engine.predict_video(
+                    model_path=self.model_path,
+                    video_path=self.src_path,
+                    conf=self.conf,
+                    iou=self.iou,
+                    save=self.save,
+                    save_dir=self.save_dir,
+                    progress_callback=pcb,
+                    frame_callback=fcb,
+                )
+                self.finished_signal.emit({"mode": "video", "data": res})
         except Exception as e:
             self.error_signal.emit(str(e))
 
@@ -239,42 +315,48 @@ class TrainWorker(QThread):
 
 class MainWindow(QMainWindow):
     PAGE_TITLES = [
-        "1. CVAT Downloader",
-        "2. Merge Datasets",
-        "3. COCO to YOLO Converter",
-        "4. Dataset Splitter",
-        "5. YOLO Auto-Trainer"
+        "1. CVAT Login",
+        "2. CVAT Downloader",
+        "3. Merge Datasets",
+        "4. COCO to YOLO Converter",
+        "5. Dataset Splitter",
+        "6. YOLO Auto-Trainer",
+        "7. Test Model"
     ]
 
     PAGE_TAGS = [
-        ("TagPink", "CVAT Connect & Download"),
+        ("TagPink", "CVAT Authentication"),
+        ("TagPink", "Select & Download Tasks"),
         ("TagYellow", "COCO 1.0 Data Consolidation"),
         ("TagGreen", "YOLO Format Converter"),
         ("TagBlue", "Train / Val / Test Partition"),
         ("TagPurple", "Model Training & Weights"),
+        ("TagTeal", "Inference & Validation"),
     ]
 
     PAGE_SUBTITLES = [
-        "Enter CVAT server credentials, query tasks, and auto-flatten image directories.",
+        "Enter your CVAT Server URL and credentials to authenticate securely.",
+        "Filter and select tasks from your CVAT server to download and auto-flatten images.",
         "Consolidate multiple downloaded tasks into data/ with automatic MD5 deduplication.",
         "Convert COCO annotations into YOLO .txt format for Detection (BBox) or Segmentation (Polygon).",
         "Partition dataset with 100% images guarantee (including unannotated background images).",
-        "Intelligently auto-tune hyperparameters, train YOLO model, and inspect outputs in data/ and runs/."
+        "Intelligently auto-tune hyperparameters, train YOLO model, and inspect outputs in runs/.",
+        "Evaluate trained YOLO weights on single images, folders, or video files with visual preview."
     ]
 
     def __init__(self):
         super().__init__()
         self.setWindowTitle(".☘︎ ݁˖ CVAT to YOLO Studio • Cozy AI Pipeline")
-        self.resize(1120, 840)
-        self.setMinimumSize(920, 620)
+        self.resize(1160, 860)
+        self.setMinimumSize(940, 640)
 
         # Single Unified Data Folder Architecture
         self.app_dir = Path("C:/Articulus/cvat").resolve()
         self.data_dir = self.app_dir / "data"
         self.runs_dir = self.app_dir / "runs"
-        self.weights_dir = self.app_dir / "weights"
+        self.test_results_dir = self.data_dir / "test_results"
 
-        for d in [self.data_dir, self.runs_dir, self.weights_dir]:
+        for d in [self.data_dir, self.runs_dir, self.test_results_dir]:
             d.mkdir(parents=True, exist_ok=True)
 
         # State Engines
@@ -283,9 +365,15 @@ class MainWindow(QMainWindow):
         self.converter_engine = CocoToYoloConverter()
         self.splitter_engine = DatasetSplitter()
         self.trainer_engine = YoloTrainerEngine()
+        self.tester_engine = YoloTestEngine()
 
         self.all_tasks_data: list[dict] = []
         self.active_worker = None
+
+        # Test state
+        self.folder_test_results: list[dict] = []
+        self.current_folder_test_idx: int = 0
+        self.last_trained_weight: Path | None = None
 
         self._init_ui()
         self.setStyleSheet(DARK_STYLESHEET)
@@ -317,14 +405,16 @@ class MainWindow(QMainWindow):
 
         # 3. Dedicated Standalone Pages Container (QStackedWidget)
         self.pages = QStackedWidget()
-        self.pages.addWidget(self._wrap_page_scroll(self._build_page_cvat()))
-        self.pages.addWidget(self._wrap_page_scroll(self._build_page_merge()))
-        self.pages.addWidget(self._wrap_page_scroll(self._build_page_convert()))
-        self.pages.addWidget(self._wrap_page_scroll(self._build_page_split()))
-        self.pages.addWidget(self._wrap_page_scroll(self._build_page_train()))
+        self.pages.addWidget(self._wrap_page_scroll(self._build_page_login()))      # Step 1: Login
+        self.pages.addWidget(self._wrap_page_scroll(self._build_page_cvat()))       # Step 2: Tasks Downloader
+        self.pages.addWidget(self._wrap_page_scroll(self._build_page_merge()))      # Step 3: Merge
+        self.pages.addWidget(self._wrap_page_scroll(self._build_page_convert()))    # Step 4: Convert
+        self.pages.addWidget(self._wrap_page_scroll(self._build_page_split()))      # Step 5: Split
+        self.pages.addWidget(self._wrap_page_scroll(self._build_page_train()))      # Step 6: Train
+        self.pages.addWidget(self._wrap_page_scroll(self._build_page_test()))       # Step 7: Test Model
         root_layout.addWidget(self.pages, stretch=1)
 
-        # 4. Bottom Navigation Footer (< Previous | Step Pills 1-5 | Next >)
+        # 4. Bottom Navigation Footer (< Previous | Step Pills 1-7 | Next >)
         root_layout.addWidget(self._build_bottom_nav_footer())
 
     # -----------------------------------------------------------------
@@ -336,7 +426,7 @@ class MainWindow(QMainWindow):
         layout = QHBoxLayout(bar)
         layout.setContentsMargins(4, 2, 4, 2)
 
-        # Circular Back Button (like `< Mental Health` in the pin)
+        # Circular Back Button
         self.btn_top_back = QPushButton()
         self.btn_top_back.setObjectName("circleNavButton")
         self.btn_top_back.setIcon(get_svg_icon("arrow_left", 16))
@@ -349,7 +439,7 @@ class MainWindow(QMainWindow):
         layout.addSpacing(10)
 
         # Top Page Title
-        self.lbl_top_title = QLabel("CVAT Downloader")
+        self.lbl_top_title = QLabel("1. CVAT Login")
         self.lbl_top_title.setObjectName("appTitleLabel")
         layout.addWidget(self.lbl_top_title)
 
@@ -361,7 +451,7 @@ class MainWindow(QMainWindow):
 
         layout.addStretch()
 
-        # Circular Bell Button with pink notification dot (from the pin!)
+        # Circular Bell Button with pink notification dot (opens data/ folder)
         self.btn_bell = QPushButton()
         self.btn_bell.setObjectName("circleNavButton")
         self.btn_bell.setIcon(get_svg_icon("bell", 20))
@@ -392,7 +482,7 @@ class MainWindow(QMainWindow):
         text_layout.setSpacing(3)
 
         tag_row = QHBoxLayout()
-        self.lbl_page_tag = QLabel("CVAT Connect & Download")
+        self.lbl_page_tag = QLabel("CVAT Authentication")
         self.lbl_page_tag.setProperty("class", "TagPink")
         tag_row.addWidget(self.lbl_page_tag)
         tag_row.addStretch()
@@ -438,9 +528,9 @@ class MainWindow(QMainWindow):
 
         layout.addStretch()
 
-        # Center: 5 Carousel Step Pills (Active is Deep Navy #0f3747)
+        # Center: 7 Carousel Step Pills
         self.step_pills: list[QPushButton] = []
-        for i in range(5):
+        for i in range(len(self.PAGE_TITLES)):
             pill = QPushButton(f"Step {i+1}")
             pill.setProperty("class", "StepPillActive" if i == 0 else "StepPill")
             pill.setCursor(Qt.PointingHandCursor)
@@ -461,57 +551,139 @@ class MainWindow(QMainWindow):
         return footer
 
     # -----------------------------------------------------------------
-    # PAGE 1: CVAT Downloader (Dedicated Standalone Screen)
+    # PAGE 1: Dedicated CVAT Login Screen (Standalone Screen)
+    # -----------------------------------------------------------------
+    def _build_page_login(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(10, 8, 10, 8)
+        layout.setSpacing(16)
+
+        # Wellness Hero Card for Login
+        hero = QFrame()
+        hero.setProperty("class", "HeroQuoteCard")
+        hero_layout = QHBoxLayout(hero)
+        hero_layout.setContentsMargins(22, 18, 22, 18)
+
+        htext = QVBoxLayout()
+        htext.setSpacing(4)
+        lbl_h1 = QLabel('"Begin with clarity and focused intention."')
+        lbl_h1.setObjectName("heroQuoteText")
+        htext.addWidget(lbl_h1)
+
+        lbl_h2 = QLabel("Connect securely to your CVAT Server to fetch annotations, tasks, and image datasets.")
+        lbl_h2.setObjectName("heroQuoteAuthor")
+        htext.addWidget(lbl_h2)
+        hero_layout.addLayout(htext, stretch=1)
+
+        lotus_icon = QLabel()
+        lotus_icon.setPixmap(get_svg_pixmap("lotus", 52, 52))
+        hero_layout.addWidget(lotus_icon)
+        layout.addWidget(hero)
+
+        # Login Card Container
+        card = QFrame()
+        card.setProperty("class", "CardFrame")
+        c_layout = QVBoxLayout(card)
+        c_layout.setContentsMargins(28, 24, 28, 24)
+        c_layout.setSpacing(16)
+
+        card_title_row = QHBoxLayout()
+        card_icon = QLabel()
+        card_icon.setPixmap(get_svg_pixmap("key", 28, 28))
+        card_title_row.addWidget(card_icon)
+
+        card_title = QLabel("CVAT Server Authentication")
+        card_title.setStyleSheet("font-size: 18px; font-weight: 800; color: #0f3747;")
+        card_title_row.addWidget(card_title)
+        card_title_row.addStretch()
+        c_layout.addLayout(card_title_row)
+
+        form_grid = QGridLayout()
+        form_grid.setHorizontalSpacing(16)
+        form_grid.setVerticalSpacing(14)
+
+        # Server URL (BLANK BY DEFAULT!)
+        form_grid.addWidget(QLabel("CVAT Server URL:"), 0, 0)
+        self.txt_login_url = QLineEdit("")
+        self.txt_login_url.setPlaceholderText("http://<your-cvat-server>:8080")
+        form_grid.addWidget(self.txt_login_url, 0, 1)
+
+        # Username
+        form_grid.addWidget(QLabel("Username:"), 1, 0)
+        self.txt_login_user = QLineEdit("")
+        self.txt_login_user.setPlaceholderText("Enter your CVAT username")
+        form_grid.addWidget(self.txt_login_user, 1, 1)
+
+        # Password
+        form_grid.addWidget(QLabel("Password:"), 2, 0)
+        self.txt_login_pass = QLineEdit("")
+        self.txt_login_pass.setEchoMode(QLineEdit.Password)
+        self.txt_login_pass.setPlaceholderText("Enter your CVAT password")
+        self.txt_login_pass.returnPressed.connect(self._on_do_login)
+        form_grid.addWidget(self.txt_login_pass, 2, 1)
+
+        c_layout.addLayout(form_grid)
+
+        # Login Button
+        self.btn_do_login = QPushButton("Connect to CVAT Server")
+        self.btn_do_login.setProperty("class", "PrimaryButton")
+        self.btn_do_login.setIcon(get_svg_icon("key", 20))
+        self.btn_do_login.setIconSize(QSize(20, 20))
+        self.btn_do_login.setMinimumHeight(44)
+        self.btn_do_login.clicked.connect(self._on_do_login)
+        c_layout.addWidget(self.btn_do_login)
+
+        # Status text
+        self.lbl_login_status = QLabel("Enter your CVAT Server URL and credentials above, then click 'Connect to CVAT Server'.")
+        self.lbl_login_status.setStyleSheet("color: #64748b; font-weight: 600; min-height: 24px;")
+        c_layout.addWidget(self.lbl_login_status)
+
+        # Connected Info Box
+        self.box_auth_info = QFrame()
+        self.box_auth_info.setStyleSheet("background-color: #f8fafc; border: 1.5px dashed #cbd5e1; border-radius: 12px; padding: 12px;")
+        self.box_auth_info.setVisible(False)
+        bai_layout = QGridLayout(self.box_auth_info)
+        bai_layout.addWidget(QLabel("<b>Connection Status:</b>"), 0, 0)
+        self.lbl_auth_conn_status = QLabel("Connected")
+        self.lbl_auth_conn_status.setStyleSheet("color: #16a34a; font-weight: 700;")
+        bai_layout.addWidget(self.lbl_auth_conn_status, 0, 1)
+
+        bai_layout.addWidget(QLabel("<b>Logged in as:</b>"), 0, 2)
+        self.lbl_auth_user = QLabel("-")
+        bai_layout.addWidget(self.lbl_auth_user, 0, 3)
+
+        bai_layout.addWidget(QLabel("<b>Server:</b>"), 1, 0)
+        self.lbl_auth_server = QLabel("-")
+        bai_layout.addWidget(self.lbl_auth_server, 1, 1)
+
+        bai_layout.addWidget(QLabel("<b>Tasks Available:</b>"), 1, 2)
+        self.lbl_auth_tasks_count = QLabel("0 tasks")
+        bai_layout.addWidget(self.lbl_auth_tasks_count, 1, 3)
+
+        c_layout.addWidget(self.box_auth_info)
+        layout.addWidget(card)
+
+        # Advance navigation row
+        advance_row = QHBoxLayout()
+        advance_row.addStretch()
+        self.btn_login_next = QPushButton("Next: Select & Download Tasks ➔")
+        self.btn_login_next.setProperty("class", "StepNavButton")
+        self.btn_login_next.clicked.connect(lambda: self._go_to_step(1))
+        advance_row.addWidget(self.btn_login_next)
+        layout.addLayout(advance_row)
+
+        layout.addStretch()
+        return page
+
+    # -----------------------------------------------------------------
+    # PAGE 2: CVAT Downloader (Dedicated Standalone Screen)
     # -----------------------------------------------------------------
     def _build_page_cvat(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(12)
-
-        # Connection Card (NO DEFAULT URL!)
-        conn_card = QFrame()
-        conn_card.setProperty("class", "CardFrame")
-        conn_layout = QGridLayout(conn_card)
-        conn_layout.setContentsMargins(16, 14, 16, 14)
-        conn_layout.setHorizontalSpacing(12)
-        conn_layout.setVerticalSpacing(8)
-
-        conn_layout.addWidget(QLabel("CVAT Server URL:"), 0, 0)
-        self.txt_login_url = QLineEdit("")
-        self.txt_login_url.setPlaceholderText("http://<your-cvat-server>:8080")
-        conn_layout.addWidget(self.txt_login_url, 0, 1)
-
-        conn_layout.addWidget(QLabel("Username:"), 0, 2)
-        self.txt_login_user = QLineEdit("")
-        self.txt_login_user.setPlaceholderText("CVAT username")
-        conn_layout.addWidget(self.txt_login_user, 0, 3)
-
-        conn_layout.addWidget(QLabel("Password:"), 0, 4)
-        self.txt_login_pass = QLineEdit("")
-        self.txt_login_pass.setEchoMode(QLineEdit.Password)
-        self.txt_login_pass.setPlaceholderText("CVAT password")
-        self.txt_login_pass.returnPressed.connect(self._on_do_login)
-        conn_layout.addWidget(self.txt_login_pass, 0, 5)
-
-        self.btn_do_login = QPushButton("Connect & Fetch")
-        self.btn_do_login.setProperty("class", "PrimaryButton")
-        self.btn_do_login.setIcon(get_svg_icon("key", 18))
-        self.btn_do_login.setIconSize(QSize(18, 18))
-        self.btn_do_login.clicked.connect(self._on_do_login)
-        conn_layout.addWidget(self.btn_do_login, 0, 6)
-
-        self.lbl_login_status = QLabel("Enter your CVAT Server URL and credentials above, then click 'Connect & Fetch'.")
-        self.lbl_login_status.setStyleSheet("color: #64748b; font-weight: 600; min-height: 20px;")
-        conn_layout.addWidget(self.lbl_login_status, 1, 0, 1, 6)
-
-        btn_refresh = QPushButton("Refresh")
-        btn_refresh.setIcon(get_svg_icon("refresh", 14))
-        btn_refresh.setIconSize(QSize(14, 14))
-        btn_refresh.clicked.connect(self._fetch_cvat_tasks)
-        conn_layout.addWidget(btn_refresh, 1, 6)
-
-        layout.addWidget(conn_card)
 
         # Filter Card
         filter_card = QFrame()
@@ -556,6 +728,12 @@ class MainWindow(QMainWindow):
         btn_clear_sel.clicked.connect(lambda: self._set_all_tasks_checked(False))
         filter_layout.addWidget(btn_clear_sel)
 
+        btn_refresh = QPushButton("Refresh")
+        btn_refresh.setIcon(get_svg_icon("refresh", 14))
+        btn_refresh.setIconSize(QSize(14, 14))
+        btn_refresh.clicked.connect(self._fetch_cvat_tasks)
+        filter_layout.addWidget(btn_refresh)
+
         layout.addWidget(filter_card)
 
         # Tasks Table
@@ -568,7 +746,7 @@ class MainWindow(QMainWindow):
         self.tbl_tasks.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
         self.tbl_tasks.verticalHeader().setDefaultSectionSize(36)
         self.tbl_tasks.verticalHeader().setVisible(False)
-        self.tbl_tasks.setMinimumHeight(240)
+        self.tbl_tasks.setMinimumHeight(280)
         self.tbl_tasks.setSelectionBehavior(QTableWidget.SelectRows)
         layout.addWidget(self.tbl_tasks, stretch=1)
 
@@ -610,14 +788,14 @@ class MainWindow(QMainWindow):
 
         self.btn_page1_next = QPushButton("Next: Merge Datasets ➔")
         self.btn_page1_next.setProperty("class", "StepNavButton")
-        self.btn_page1_next.clicked.connect(lambda: self._go_to_step(1))
+        self.btn_page1_next.clicked.connect(lambda: self._go_to_step(2))
         status_row.addWidget(self.btn_page1_next)
 
         layout.addLayout(status_row)
         return page
 
     # -----------------------------------------------------------------
-    # PAGE 2: Merge Datasets (Dedicated Standalone Screen)
+    # PAGE 3: Merge Datasets (Dedicated Standalone Screen)
     # -----------------------------------------------------------------
     def _build_page_merge(self) -> QWidget:
         page = QWidget()
@@ -625,7 +803,7 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(14)
 
-        # Zen Stones Quote Card (Saint Augustine Style from Pin)
+        # Zen Stones Quote Card
         quote_card = QFrame()
         quote_card.setProperty("class", "HeroQuoteCard")
         quote_layout = QHBoxLayout(quote_card)
@@ -697,7 +875,7 @@ class MainWindow(QMainWindow):
         advance_row.addStretch()
         self.btn_page2_next = QPushButton("Next: Convert to YOLO ➔")
         self.btn_page2_next.setProperty("class", "StepNavButton")
-        self.btn_page2_next.clicked.connect(lambda: self._go_to_step(2))
+        self.btn_page2_next.clicked.connect(lambda: self._go_to_step(3))
         advance_row.addWidget(self.btn_page2_next)
         layout.addLayout(advance_row)
 
@@ -705,7 +883,7 @@ class MainWindow(QMainWindow):
         return page
 
     # -----------------------------------------------------------------
-    # PAGE 3: COCO to YOLO Converter (Dedicated Standalone Screen)
+    # PAGE 4: COCO to YOLO Converter (Dedicated Standalone Screen)
     # -----------------------------------------------------------------
     def _build_page_convert(self) -> QWidget:
         page = QWidget()
@@ -713,7 +891,7 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(14)
 
-        # 2 Large Choice Cards side-by-side (like "Hang out" and "Laugh" in Phone 1 of the pin!)
+        # 2 Large Choice Cards side-by-side
         choice_row = QHBoxLayout()
         choice_row.setSpacing(14)
 
@@ -826,7 +1004,7 @@ class MainWindow(QMainWindow):
         advance_row.addStretch()
         self.btn_page3_next = QPushButton("Next: Split Dataset ➔")
         self.btn_page3_next.setProperty("class", "StepNavButton")
-        self.btn_page3_next.clicked.connect(lambda: self._go_to_step(3))
+        self.btn_page3_next.clicked.connect(lambda: self._go_to_step(4))
         advance_row.addWidget(self.btn_page3_next)
         layout.addLayout(advance_row)
 
@@ -834,7 +1012,7 @@ class MainWindow(QMainWindow):
         return page
 
     # -----------------------------------------------------------------
-    # PAGE 4: Dataset Splitter (Dedicated Standalone Screen)
+    # PAGE 5: Dataset Splitter (Dedicated Standalone Screen)
     # -----------------------------------------------------------------
     def _build_page_split(self) -> QWidget:
         page = QWidget()
@@ -953,7 +1131,7 @@ class MainWindow(QMainWindow):
         advance_row.addStretch()
         self.btn_page4_next = QPushButton("Next: YOLO Auto-Trainer ➔")
         self.btn_page4_next.setProperty("class", "StepNavButton")
-        self.btn_page4_next.clicked.connect(lambda: self._go_to_step(4))
+        self.btn_page4_next.clicked.connect(lambda: self._go_to_step(5))
         advance_row.addWidget(self.btn_page4_next)
         layout.addLayout(advance_row)
 
@@ -961,7 +1139,7 @@ class MainWindow(QMainWindow):
         return page
 
     # -----------------------------------------------------------------
-    # PAGE 5: YOLO Auto-Trainer & Explorer (Dedicated Standalone Screen)
+    # PAGE 6: YOLO Auto-Trainer (Dedicated Standalone Screen)
     # -----------------------------------------------------------------
     def _build_page_train(self) -> QWidget:
         page = QWidget()
@@ -1065,128 +1243,300 @@ class MainWindow(QMainWindow):
         btn_runs_base.clicked.connect(lambda: self._browse_folder(self.txt_runs_base))
         h_layout.addWidget(btn_runs_base, 5, 6)
 
-        self.lbl_run_preview = QLabel("Output Preview: runs/detect/my_yolo_model_v1/weights/my_yolo_model.pt")
-        self.lbl_run_preview.setStyleSheet("color: #166534; font-weight: 700; min-height: 28px;")
+        # Output preview notice (NO EXTRA WEIGHTS FOLDER!)
+        self.lbl_run_preview = QLabel("Output Preview: runs/detect/my_yolo_model_v1/weights/my_yolo_model_v1.pt")
+        self.lbl_run_preview.setStyleSheet("color: #0f766e; font-weight: 700; background: #f0fdfa; padding: 6px 12px; border-radius: 8px;")
         h_layout.addWidget(self.lbl_run_preview, 6, 0, 1, 7)
 
         layout.addWidget(train_card)
 
-        self._update_model_presets()
-        self._update_run_preview()
+        # Training Execution Card
+        exec_card = QFrame()
+        exec_card.setProperty("class", "CardFrame")
+        exec_layout = QVBoxLayout(exec_card)
+        exec_layout.setContentsMargins(16, 14, 16, 14)
+        exec_layout.setSpacing(10)
 
-        # Action Row (Start & Stop)
-        action_row = QHBoxLayout()
-        self.btn_start_train = QPushButton("Start YOLO Training")
+        btn_row = QHBoxLayout()
+        self.btn_start_train = QPushButton("Start YOLO Model Training")
         self.btn_start_train.setProperty("class", "PrimaryButton")
-        self.btn_start_train.setIcon(get_svg_icon("step_train", 20))
-        self.btn_start_train.setIconSize(QSize(20, 20))
+        self.btn_start_train.setIcon(get_svg_icon("play", 18))
+        self.btn_start_train.setIconSize(QSize(18, 18))
         self.btn_start_train.clicked.connect(self._on_start_training)
-        action_row.addWidget(self.btn_start_train, stretch=2)
+        btn_row.addWidget(self.btn_start_train, stretch=3)
 
         self.btn_stop_train = QPushButton("Stop Training")
         self.btn_stop_train.setProperty("class", "DangerButton")
-        self.btn_stop_train.setIcon(get_svg_icon("stop", 18))
-        self.btn_stop_train.setIconSize(QSize(18, 18))
+        self.btn_stop_train.setIcon(get_svg_icon("stop", 16))
+        self.btn_stop_train.setIconSize(QSize(16, 16))
         self.btn_stop_train.setEnabled(False)
         self.btn_stop_train.clicked.connect(self._on_stop_training)
-        action_row.addWidget(self.btn_stop_train, stretch=1)
+        btn_row.addWidget(self.btn_stop_train, stretch=1)
 
-        layout.addLayout(action_row)
-
-        # Real-time Metrics Card (Sleep/Stress indicator style)
-        metrics_card = QFrame()
-        metrics_card.setProperty("class", "CardFrame")
-        metrics_layout = QHBoxLayout(metrics_card)
-        metrics_layout.setContentsMargins(18, 10, 18, 10)
-        metrics_layout.setSpacing(14)
-
-        def make_metric_badge(icon_name, text_lbl):
-            b_layout = QHBoxLayout()
-            b_layout.setSpacing(6)
-            icon_lbl = QLabel()
-            icon_lbl.setPixmap(get_svg_pixmap(icon_name, 18, 18))
-            b_layout.addWidget(icon_lbl)
-            text_lbl.setStyleSheet("font-weight: 700; font-size: 13px; color: #1e293b; min-height: 24px;")
-            b_layout.addWidget(text_lbl)
-            return b_layout
-
-        self.lbl_metric_epoch = QLabel("Epoch: --/--")
-        self.lbl_metric_loss = QLabel("Loss: --")
-        self.lbl_metric_fitness = QLabel("Best Fitness / mAP: --")
-        self.lbl_metric_early_stop = QLabel("Early Stopping: Active")
-
-        metrics_layout.addLayout(make_metric_badge("clock", self.lbl_metric_epoch))
-        metrics_layout.addStretch()
-        metrics_layout.addLayout(make_metric_badge("chart", self.lbl_metric_loss))
-        metrics_layout.addStretch()
-        metrics_layout.addLayout(make_metric_badge("target", self.lbl_metric_fitness))
-        metrics_layout.addStretch()
-        metrics_layout.addLayout(make_metric_badge("zen_stones", self.lbl_metric_early_stop))
-
-        layout.addWidget(metrics_card)
+        exec_layout.addLayout(btn_row)
 
         self.prog_train = QProgressBar()
         self.prog_train.setValue(0)
-        layout.addWidget(self.prog_train)
+        exec_layout.addWidget(self.prog_train)
 
+        self.lbl_train_metrics = QLabel("Waiting to begin training session...")
+        self.lbl_train_metrics.setStyleSheet("color: #1e293b; font-weight: 600;")
+        exec_layout.addWidget(self.lbl_train_metrics)
+
+        # Splitter between log and yaml preview
+        split_area = QSplitter(Qt.Horizontal)
+
+        # Training log
+        log_box = QGroupBox("Training Output Console")
+        l_layout = QVBoxLayout(log_box)
         self.txt_train_log = QPlainTextEdit()
         self.txt_train_log.setReadOnly(True)
-        self.txt_train_log.setMinimumHeight(140)
-        layout.addWidget(self.txt_train_log, stretch=1)
+        self.txt_train_log.setMinimumHeight(180)
+        l_layout.addWidget(self.txt_train_log)
+        split_area.addWidget(log_box)
 
-        # Quick Explorer Box
-        quick_card = QFrame()
-        quick_card.setProperty("class", "CardFrame")
-        quick_layout = QVBoxLayout(quick_card)
-        quick_layout.setContentsMargins(16, 12, 16, 12)
-
-        quick_btns = QHBoxLayout()
-        btn_open_data = QPushButton("Open data/ Folder")
-        btn_open_data.setIcon(get_svg_icon("folder", 16))
-        btn_open_data.setIconSize(QSize(16, 16))
-        btn_open_data.clicked.connect(lambda: self._open_dir(self.data_dir))
-        quick_btns.addWidget(btn_open_data)
-
-        btn_open_runs = QPushButton("Open runs/ Folder")
-        btn_open_runs.setIcon(get_svg_icon("lotus", 16))
-        btn_open_runs.setIconSize(QSize(16, 16))
-        btn_open_runs.clicked.connect(lambda: self._open_dir(self.runs_dir))
-        quick_btns.addWidget(btn_open_runs)
-
-        btn_refresh_yaml = QPushButton("Refresh data.yaml Preview")
-        btn_refresh_yaml.setIcon(get_svg_icon("refresh", 16))
-        btn_refresh_yaml.setIconSize(QSize(16, 16))
-        btn_refresh_yaml.clicked.connect(self._refresh_yaml_preview)
-        quick_btns.addWidget(btn_refresh_yaml)
-
-        quick_layout.addLayout(quick_btns)
-
+        # data.yaml preview
+        yaml_box = QGroupBox("data.yaml Preview")
+        y_layout = QVBoxLayout(yaml_box)
         self.txt_yaml_preview = QPlainTextEdit()
         self.txt_yaml_preview.setReadOnly(True)
-        self.txt_yaml_preview.setMaximumHeight(100)
-        quick_layout.addWidget(self.txt_yaml_preview)
+        self.txt_yaml_preview.setMinimumHeight(180)
+        y_layout.addWidget(self.txt_yaml_preview)
+        split_area.addWidget(yaml_box)
 
-        layout.addWidget(quick_card)
+        exec_layout.addWidget(split_area)
+        layout.addWidget(exec_card)
+
+        advance_row = QHBoxLayout()
+        advance_row.addStretch()
+        self.btn_page5_next = QPushButton("Next: Test Model ➔")
+        self.btn_page5_next.setProperty("class", "StepNavButton")
+        self.btn_page5_next.clicked.connect(lambda: self._go_to_step(6))
+        advance_row.addWidget(self.btn_page5_next)
+        layout.addLayout(advance_row)
+
+        self._update_model_presets()
         return page
 
-    # =================================================================
-    # Common Event Handlers & Slots
-    # =================================================================
+    # -----------------------------------------------------------------
+    # PAGE 7: Test Model / Inference (Dedicated Standalone Screen)
+    # -----------------------------------------------------------------
+    def _build_page_test(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(12)
 
-    def _browse_folder(self, line_edit: QLineEdit):
-        folder = QFileDialog.getExistingDirectory(self, "Select Folder", line_edit.text())
-        if folder:
-            line_edit.setText(str(Path(folder).resolve()))
+        # Configuration Card
+        cfg_card = QFrame()
+        cfg_card.setProperty("class", "CardFrame")
+        cg_layout = QGridLayout(cfg_card)
+        cg_layout.setContentsMargins(18, 16, 18, 16)
+        cg_layout.setHorizontalSpacing(14)
+        cg_layout.setVerticalSpacing(10)
 
-    def _browse_file(self, line_edit: QLineEdit, filter_str: str = "All Files (*.*)"):
-        f, _ = QFileDialog.getOpenFileName(self, "Select File", line_edit.text(), filter_str)
-        if f:
-            line_edit.setText(str(Path(f).resolve()))
+        # 1. Model Weights
+        cg_layout.addWidget(QLabel("Model Weights (.pt):"), 0, 0)
+        self.txt_test_model = QLineEdit()
+        self.txt_test_model.setPlaceholderText("Path to trained model .pt (e.g. runs/detect/.../weights/my_model_v1.pt)")
+        cg_layout.addWidget(self.txt_test_model, 0, 1, 1, 4)
 
+        btn_browse_test_pt = QPushButton("Browse Model...")
+        btn_browse_test_pt.setIcon(get_svg_icon("folder", 16))
+        btn_browse_test_pt.setIconSize(QSize(16, 16))
+        btn_browse_test_pt.clicked.connect(self._browse_test_model_pt)
+        cg_layout.addWidget(btn_browse_test_pt, 0, 5)
+
+        # 2. Source Type Selector (Single Image, Entire Folder, Video)
+        cg_layout.addWidget(QLabel("Test Input Source:"), 1, 0)
+        src_mode_box = QHBoxLayout()
+        self.rb_src_image = QRadioButton("Single Image")
+        self.rb_src_folder = QRadioButton("Entire Images Folder")
+        self.rb_src_video = QRadioButton("Video File")
+        self.rb_src_image.setChecked(True)
+
+        self.btn_grp_source = QButtonGroup(self)
+        self.btn_grp_source.addButton(self.rb_src_image, 0)
+        self.btn_grp_source.addButton(self.rb_src_folder, 1)
+        self.btn_grp_source.addButton(self.rb_src_video, 2)
+        self.btn_grp_source.buttonToggled.connect(self._on_test_source_mode_changed)
+
+        src_mode_box.addWidget(self.rb_src_image)
+        src_mode_box.addWidget(self.rb_src_folder)
+        src_mode_box.addWidget(self.rb_src_video)
+        src_mode_box.addStretch()
+        cg_layout.addLayout(src_mode_box, 1, 1, 1, 5)
+
+        # 3. Source Path
+        self.lbl_test_src_path = QLabel("Image File Path:")
+        cg_layout.addWidget(self.lbl_test_src_path, 2, 0)
+        self.txt_test_source = QLineEdit()
+        self.txt_test_source.setPlaceholderText("Select image to evaluate...")
+        cg_layout.addWidget(self.txt_test_source, 2, 1, 1, 4)
+
+        self.btn_browse_test_src = QPushButton("Browse...")
+        self.btn_browse_test_src.setIcon(get_svg_icon("folder", 16))
+        self.btn_browse_test_src.setIconSize(QSize(16, 16))
+        self.btn_browse_test_src.clicked.connect(self._browse_test_source)
+        cg_layout.addWidget(self.btn_browse_test_src, 2, 5)
+
+        # 4. Confidence & IoU
+        cg_layout.addWidget(QLabel("Confidence (conf):"), 3, 0)
+        self.slider_test_conf = QSlider(Qt.Horizontal)
+        self.slider_test_conf.setRange(5, 100)
+        self.slider_test_conf.setValue(25)
+        cg_layout.addWidget(self.slider_test_conf, 3, 1)
+        self.spin_test_conf = QDoubleSpinBox()
+        self.spin_test_conf.setRange(0.05, 1.0)
+        self.spin_test_conf.setSingleStep(0.05)
+        self.spin_test_conf.setValue(0.25)
+        self.slider_test_conf.valueChanged.connect(lambda v: self.spin_test_conf.setValue(v / 100.0))
+        self.spin_test_conf.valueChanged.connect(lambda v: self.slider_test_conf.setValue(int(v * 100)))
+        cg_layout.addWidget(self.spin_test_conf, 3, 2)
+
+        cg_layout.addWidget(QLabel("IoU Threshold:"), 3, 3)
+        self.slider_test_iou = QSlider(Qt.Horizontal)
+        self.slider_test_iou.setRange(10, 100)
+        self.slider_test_iou.setValue(45)
+        cg_layout.addWidget(self.slider_test_iou, 3, 4)
+        self.spin_test_iou = QDoubleSpinBox()
+        self.spin_test_iou.setRange(0.1, 1.0)
+        self.spin_test_iou.setSingleStep(0.05)
+        self.spin_test_iou.setValue(0.45)
+        self.slider_test_iou.valueChanged.connect(lambda v: self.spin_test_iou.setValue(v / 100.0))
+        self.spin_test_iou.valueChanged.connect(lambda v: self.slider_test_iou.setValue(int(v * 100)))
+        cg_layout.addWidget(self.spin_test_iou, 3, 5)
+
+        # 5. Save results checkbox & destination folder
+        self.chk_save_test = QCheckBox("Save Test Prediction Results")
+        self.chk_save_test.setChecked(True)
+        self.chk_save_test.setStyleSheet("font-weight: 700; color: #0f3747;")
+        cg_layout.addWidget(self.chk_save_test, 4, 0)
+
+        self.txt_test_save_dir = QLineEdit(str(self.test_results_dir))
+        cg_layout.addWidget(self.txt_test_save_dir, 4, 1, 1, 4)
+        btn_browse_save_dir = QPushButton("Browse...")
+        btn_browse_save_dir.setIcon(get_svg_icon("folder", 16))
+        btn_browse_save_dir.setIconSize(QSize(16, 16))
+        btn_browse_save_dir.clicked.connect(lambda: self._browse_folder(self.txt_test_save_dir))
+        cg_layout.addWidget(btn_browse_save_dir, 4, 5)
+
+        # Action Buttons
+        act_row = QHBoxLayout()
+        self.btn_run_test = QPushButton("Run Model Test / Predict")
+        self.btn_run_test.setProperty("class", "PrimaryButton")
+        self.btn_run_test.setIcon(get_svg_icon("play", 18))
+        self.btn_run_test.setIconSize(QSize(18, 18))
+        self.btn_run_test.clicked.connect(self._on_run_test)
+        act_row.addWidget(self.btn_run_test, stretch=3)
+
+        self.btn_stop_test = QPushButton("Stop Test")
+        self.btn_stop_test.setProperty("class", "DangerButton")
+        self.btn_stop_test.setIcon(get_svg_icon("stop", 16))
+        self.btn_stop_test.setIconSize(QSize(16, 16))
+        self.btn_stop_test.setEnabled(False)
+        self.btn_stop_test.clicked.connect(self._on_stop_test)
+        act_row.addWidget(self.btn_stop_test, stretch=1)
+
+        btn_open_results = QPushButton("Open Results Folder")
+        btn_open_results.setProperty("class", "SecondaryNavButton")
+        btn_open_results.setIcon(get_svg_icon("folder", 16))
+        btn_open_results.setIconSize(QSize(16, 16))
+        btn_open_results.clicked.connect(lambda: self._open_dir(Path(self.txt_test_save_dir.text().strip())))
+        act_row.addWidget(btn_open_results, stretch=1)
+
+        cg_layout.addLayout(act_row, 5, 0, 1, 6)
+
+        self.prog_test = QProgressBar()
+        self.prog_test.setValue(0)
+        cg_layout.addWidget(self.prog_test, 6, 0, 1, 6)
+
+        self.lbl_test_status = QLabel("Select model weights and input source above, then click 'Run Model Test / Predict'.")
+        self.lbl_test_status.setStyleSheet("color: #64748b; font-weight: 600;")
+        cg_layout.addWidget(self.lbl_test_status, 7, 0, 1, 6)
+
+        layout.addWidget(cfg_card)
+
+        # Visual Result & Detections Inspector Area
+        inspect_card = QFrame()
+        inspect_card.setProperty("class", "CardFrame")
+        ic_layout = QHBoxLayout(inspect_card)
+        ic_layout.setContentsMargins(14, 14, 14, 14)
+        ic_layout.setSpacing(14)
+
+        # Left: Image / Frame Preview Canvas
+        canvas_col = QVBoxLayout()
+        canvas_top = QHBoxLayout()
+        lbl_canvas_title = QLabel("Prediction Visual Preview")
+        lbl_canvas_title.setStyleSheet("font-weight: 700; color: #0f3747; font-size: 14px;")
+        canvas_top.addWidget(lbl_canvas_title)
+        canvas_top.addStretch()
+
+        # Folder Carousel Navigator
+        self.btn_prev_test_img = QPushButton("< Prev")
+        self.btn_prev_test_img.setEnabled(False)
+        self.btn_prev_test_img.clicked.connect(self._on_prev_test_img)
+        canvas_top.addWidget(self.btn_prev_test_img)
+
+        self.lbl_test_img_counter = QLabel("0 / 0")
+        self.lbl_test_img_counter.setStyleSheet("font-weight: 700; color: #475569;")
+        canvas_top.addWidget(self.lbl_test_img_counter)
+
+        self.btn_next_test_img = QPushButton("Next >")
+        self.btn_next_test_img.setEnabled(False)
+        self.btn_next_test_img.clicked.connect(self._on_next_test_img)
+        canvas_top.addWidget(self.btn_next_test_img)
+
+        canvas_col.addLayout(canvas_top)
+
+        # Canvas Frame
+        canvas_frame = QFrame()
+        canvas_frame.setStyleSheet("background-color: #0f172a; border-radius: 12px; border: 1.5px solid #334155;")
+        cf_layout = QVBoxLayout(canvas_frame)
+        cf_layout.setContentsMargins(4, 4, 4, 4)
+
+        self.lbl_test_preview = QLabel("Visual evaluation result will appear here")
+        self.lbl_test_preview.setAlignment(Qt.AlignCenter)
+        self.lbl_test_preview.setStyleSheet("color: #94a3b8; font-weight: 600;")
+        self.lbl_test_preview.setMinimumSize(480, 320)
+        cf_layout.addWidget(self.lbl_test_preview)
+        canvas_col.addWidget(canvas_frame, stretch=1)
+
+        ic_layout.addLayout(canvas_col, stretch=3)
+
+        # Right: Detection Summary & Table
+        table_col = QVBoxLayout()
+        lbl_det_table_title = QLabel("Detected Objects & Metrics")
+        lbl_det_table_title.setStyleSheet("font-weight: 700; color: #0f3747; font-size: 14px;")
+        table_col.addWidget(lbl_det_table_title)
+
+        self.lbl_test_classes_badge = QLabel("No detections yet")
+        self.lbl_test_classes_badge.setStyleSheet("color: #64748b; font-weight: 600; padding: 4px;")
+        self.lbl_test_classes_badge.setWordWrap(True)
+        table_col.addWidget(self.lbl_test_classes_badge)
+
+        self.tbl_test_detections = QTableWidget()
+        self.tbl_test_detections.setColumnCount(4)
+        self.tbl_test_detections.setHorizontalHeaderLabels(["Class", "Confidence", "Coordinates (xyxy)", "ID"])
+        self.tbl_test_detections.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
+        self.tbl_test_detections.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.tbl_test_detections.verticalHeader().setVisible(False)
+        table_col.addWidget(self.tbl_test_detections, stretch=1)
+
+        ic_layout.addLayout(table_col, stretch=2)
+        layout.addWidget(inspect_card, stretch=1)
+
+        return page
+
+    # -----------------------------------------------------------------
+    # Step Navigation Logic (1 to 7)
+    # -----------------------------------------------------------------
     def _open_dir(self, dir_path: Path):
         dir_path.mkdir(parents=True, exist_ok=True)
         if sys.platform == "win32":
             os.startfile(str(dir_path))
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", str(dir_path)])
         else:
             subprocess.Popen(["xdg-open", str(dir_path)])
 
@@ -1202,18 +1552,13 @@ class MainWindow(QMainWindow):
 
         # Update Greeting Header
         tag_class, tag_text = self.PAGE_TAGS[step_idx]
-        self.lbl_page_tag.setProperty("class", tag_text if False else tag_class)
+        self.lbl_page_tag.setProperty("class", tag_class)
         self.lbl_page_tag.setText(tag_text)
         self.lbl_page_tag.style().unpolish(self.lbl_page_tag)
         self.lbl_page_tag.style().polish(self.lbl_page_tag)
 
-        self.lbl_greeting_title = self.findChild(QLabel, "greetingTitle")
-        if self.lbl_greeting_title:
-            self.lbl_greeting_title.setText(f"{self.PAGE_TITLES[step_idx]} 👋")
-
-        self.lbl_greeting_sub = self.findChild(QLabel, "greetingSubtitle")
-        if self.lbl_greeting_sub:
-            self.lbl_greeting_sub.setText(self.PAGE_SUBTITLES[step_idx])
+        self.lbl_greeting_title.setText(f"{self.PAGE_TITLES[step_idx]} 👋")
+        self.lbl_greeting_sub.setText(self.PAGE_SUBTITLES[step_idx])
 
         # Update Footer Carousel Step Pills
         for idx, pill in enumerate(self.step_pills):
@@ -1227,9 +1572,15 @@ class MainWindow(QMainWindow):
         self.btn_footer_prev.setEnabled(step_idx > 0)
         self.btn_footer_next.setEnabled(step_idx < self.pages.count() - 1)
 
-        # If navigating to Step 5, refresh yaml preview
-        if step_idx == 4:
+        # Refresh preview if going to Train (Step 6 / index 5)
+        if step_idx == 5:
             self._refresh_yaml_preview()
+            self._update_run_preview()
+
+        # Pre-fill model path if going to Test (Step 7 / index 6)
+        if step_idx == 6 and self.last_trained_weight and self.last_trained_weight.exists():
+            if not self.txt_test_model.text().strip():
+                self.txt_test_model.setText(str(self.last_trained_weight))
 
     def _on_prev_step(self):
         cur = self.pages.currentIndex()
@@ -1242,7 +1593,7 @@ class MainWindow(QMainWindow):
             self._go_to_step(cur + 1)
 
     # -----------------------------------------------------------------
-    # CVAT Downloader Slots
+    # Step 1: CVAT Authentication Slots
     # -----------------------------------------------------------------
     def _on_do_login(self):
         url = self.txt_login_url.text().strip()
@@ -1265,11 +1616,18 @@ class MainWindow(QMainWindow):
     def _on_auth_success(self, login_info: dict, projects: list[dict], tasks: list[dict]):
         self.btn_do_login.setEnabled(True)
         self.mascot.set_state(DancingSvgMascot.STATE_SUCCESS)
-        username = login_info.get("username") or "User"
-        server_url = login_info.get("server_url")
-        self.lbl_login_status.setText(f"Connected successfully as {username}!")
+        username = login_info.get("username") or self.txt_login_user.text().strip() or "User"
+        server_url = login_info.get("server_url") or self.txt_login_url.text().strip()
+        self.lbl_login_status.setText(f"Connected successfully as '{username}'!")
 
-        # Populate projects dropdown
+        # Update info box
+        self.box_auth_info.setVisible(True)
+        self.lbl_auth_conn_status.setText("Online & Authenticated")
+        self.lbl_auth_user.setText(username)
+        self.lbl_auth_server.setText(server_url)
+        self.lbl_auth_tasks_count.setText(f"{len(tasks)} tasks across {len(projects)} projects")
+
+        # Populate projects dropdown in Step 2
         self.cmb_proj_filter.blockSignals(True)
         self.cmb_proj_filter.clear()
         self.cmb_proj_filter.addItem("All Projects", None)
@@ -1281,12 +1639,17 @@ class MainWindow(QMainWindow):
         self._populate_tasks_table(self.all_tasks_data)
         self.lbl_cvat_status.setText(f"Loaded {len(tasks)} tasks across {len(projects)} projects.")
 
+        QMessageBox.information(self, "Connected", f"Connected to CVAT Server successfully!\nLoaded {len(tasks)} tasks.")
+
     def _on_auth_error(self, err_msg: str):
         self.btn_do_login.setEnabled(True)
         self.mascot.set_state(DancingSvgMascot.STATE_IDLE)
         self.lbl_login_status.setText(f"Connection Failed: {err_msg}")
         QMessageBox.critical(self, "Connection Error", f"Unable to connect to CVAT server:\n{err_msg}")
 
+    # -----------------------------------------------------------------
+    # Step 2: CVAT Downloader Slots
+    # -----------------------------------------------------------------
     def _fetch_cvat_tasks(self):
         if not self.cvat_client.is_authenticated():
             self._on_do_login()
@@ -1364,7 +1727,8 @@ class MainWindow(QMainWindow):
 
     def _on_download_selected_tasks(self):
         if not self.cvat_client.is_authenticated():
-            QMessageBox.warning(self, "Not Connected", "Please connect to CVAT before downloading tasks.")
+            QMessageBox.warning(self, "Not Connected", "Please connect to CVAT in Step 1 before downloading tasks.")
+            self._go_to_step(0)
             return
 
         selected_tasks = []
@@ -1399,362 +1763,302 @@ class MainWindow(QMainWindow):
     def _on_download_finished(self, results: list):
         self.btn_download_tasks.setEnabled(True)
         self.mascot.set_state(DancingSvgMascot.STATE_SUCCESS)
-        self.prog_dl.setValue(self.prog_dl.maximum())
-        self.lbl_cvat_status.setText(f"Successfully downloaded and extracted {len(results)} tasks into data/raw_tasks!")
-
+        self.lbl_cvat_status.setText(f"Downloaded and extracted {len(results)} tasks into data/raw_tasks!")
         QMessageBox.information(
-            self, "Download Complete",
-            f"Successfully downloaded {len(results)} tasks!\n\n"
-            f"All images extracted and flattened (default folder removed).\n"
-            f"Location: {self.txt_dl_folder.text()}\n\n"
-            f"Click 'Next: Merge Datasets' below to proceed."
+            self,
+            "Download Finished",
+            f"Successfully downloaded and extracted {len(results)} task datasets into:\n{self.txt_dl_folder.text()}"
         )
 
     def _on_download_error(self, err_msg: str):
         self.btn_download_tasks.setEnabled(True)
         self.mascot.set_state(DancingSvgMascot.STATE_IDLE)
-        self.lbl_cvat_status.setText(f"Download Error: {err_msg}")
-        QMessageBox.critical(self, "Download Error", f"An error occurred during download:\n{err_msg}")
+        self.lbl_cvat_status.setText(f"Error: {err_msg}")
+        QMessageBox.critical(self, "Download Error", f"Task download failed:\n{err_msg}")
 
     # -----------------------------------------------------------------
-    # Merge Datasets Slots
+    # Step 3: Merge Datasets Slots
     # -----------------------------------------------------------------
     def _on_run_merge(self):
-        src_dir = Path(self.txt_merge_src.text().strip())
-        dst_dir = Path(self.txt_merge_dst.text().strip())
+        src = Path(self.txt_merge_src.text().strip())
+        dst = Path(self.txt_merge_dst.text().strip())
 
-        if not src_dir.exists():
-            QMessageBox.warning(self, "Directory Not Found", f"Source directory does not exist:\n{src_dir}")
+        if not src.exists():
+            QMessageBox.warning(self, "Path Not Found", f"Source directory does not exist:\n{src}")
             return
 
         self.btn_run_merge.setEnabled(False)
         self.prog_merge.setValue(0)
         self.lbl_merge_stats.setText("Merging datasets...")
-        self.mascot.set_state(DancingSvgMascot.STATE_PROCESSING)
+        self.mascot.set_state(DancingSvgMascot.STATE_DOWNLOADING)
 
-        self.active_worker = MergeWorker(self.merger_engine, src_dir, dst_dir)
-        self.active_worker.progress_signal.connect(self._on_merge_progress)
+        self.active_worker = MergeWorker(self.merger_engine, src, dst)
+        self.active_worker.progress_signal.connect(lambda c, t, d: (self.prog_merge.setMaximum(t), self.prog_merge.setValue(c), self.lbl_merge_stats.setText(d)))
         self.active_worker.finished_signal.connect(self._on_merge_finished)
         self.active_worker.error_signal.connect(self._on_merge_error)
         self.active_worker.start()
 
-    def _on_merge_progress(self, cur: int, tot: int, desc: str):
-        self.prog_merge.setMaximum(tot)
-        self.prog_merge.setValue(cur)
-        self.lbl_merge_stats.setText(desc)
-
     def _on_merge_finished(self, stats: dict):
         self.btn_run_merge.setEnabled(True)
         self.mascot.set_state(DancingSvgMascot.STATE_SUCCESS)
-        self.prog_merge.setValue(self.prog_merge.maximum())
+        self.prog_merge.setValue(100)
 
-        msg = (
-            f"Merge Complete!\n"
-            f"• Merged Images: {stats['total_images']}\n"
-            f"• Merged Annotations: {stats['total_annotations']}\n"
-            f"• Unified Categories: {stats['total_categories']}\n"
-            f"• Duplicate Filenames Resolved: {stats['duplicates_resolved']}\n"
-            f"• Output COCO JSON: {stats['output_annotation_path']}"
+        summary = (
+            f"Merged: {stats.get('total_tasks', 0)} tasks | "
+            f"Images: {stats.get('total_images', 0)} | "
+            f"Annotations: {stats.get('total_annotations', 0)} | "
+            f"Categories: {stats.get('total_categories', 0)}"
         )
-        self.lbl_merge_stats.setText(msg)
-        QMessageBox.information(self, "Merge Succeeded", msg)
+        self.lbl_merge_stats.setText(summary)
+        QMessageBox.information(self, "Merge Successful", f"Dataset Merge Completed!\n\n{summary}\nOutput: {self.txt_merge_dst.text()}")
 
     def _on_merge_error(self, err_msg: str):
         self.btn_run_merge.setEnabled(True)
         self.mascot.set_state(DancingSvgMascot.STATE_IDLE)
         self.lbl_merge_stats.setText(f"Merge Error: {err_msg}")
-        QMessageBox.critical(self, "Merge Error", f"Failed to merge datasets:\n{err_msg}")
+        QMessageBox.critical(self, "Merge Error", f"Merge failed:\n{err_msg}")
 
     # -----------------------------------------------------------------
-    # COCO to YOLO Converter Slots
+    # Step 4: COCO to YOLO Converter Slots
     # -----------------------------------------------------------------
     def _on_task_mode_changed(self):
-        mode = "detect" if self.rb_mode_det.isChecked() else "segment"
-        self.cmb_train_task.setCurrentText(mode)
+        is_det = self.rb_mode_det.isChecked()
+        self.card_det.setProperty("class", "ChoiceCardNavy" if is_det else "ChoiceCardPink")
+        self.card_seg.setProperty("class", "ChoiceCardPink" if is_det else "ChoiceCardNavy")
+        self.card_det.style().unpolish(self.card_det)
+        self.card_det.style().polish(self.card_det)
+        self.card_seg.style().unpolish(self.card_seg)
+        self.card_seg.style().polish(self.card_seg)
 
     def _on_run_convert(self):
-        coco_json = Path(self.txt_conv_json.text().strip())
-        if not coco_json.exists():
-            alt = self.data_dir / "annotations" / "instances_default.json"
-            if alt.exists():
-                coco_json = alt
-        if not coco_json.exists():
-            QMessageBox.warning(self, "File Not Found", f"COCO JSON not found at:\n{coco_json}\nPlease run Merge first or select an existing COCO JSON file.")
-            return
-
-        out_labels = Path(self.txt_conv_labels_dst.text().strip())
+        json_path = Path(self.txt_conv_json.text().strip())
+        labels_dst = Path(self.txt_conv_labels_dst.text().strip())
         mode = "detect" if self.rb_mode_det.isChecked() else "segment"
+
+        if not json_path.exists():
+            QMessageBox.warning(self, "File Not Found", f"COCO JSON file not found:\n{json_path}")
+            return
 
         self.btn_run_convert.setEnabled(False)
         self.prog_convert.setValue(0)
-        self.lbl_conv_stats.setText(f"Converting COCO 1.0 to YOLO {mode.upper()}...")
-        self.mascot.set_state(DancingSvgMascot.STATE_PROCESSING)
+        self.lbl_conv_stats.setText(f"Converting in [{mode.upper()}] mode...")
+        self.mascot.set_state(DancingSvgMascot.STATE_DOWNLOADING)
 
-        self.active_worker = ConvertWorker(self.converter_engine, coco_json, out_labels, mode)
-        self.active_worker.progress_signal.connect(self._on_convert_progress)
+        self.active_worker = ConvertWorker(self.converter_engine, json_path, labels_dst, mode)
+        self.active_worker.progress_signal.connect(lambda c, t, d: (self.prog_convert.setMaximum(t), self.prog_convert.setValue(c), self.lbl_conv_stats.setText(d)))
         self.active_worker.finished_signal.connect(self._on_convert_finished)
         self.active_worker.error_signal.connect(self._on_convert_error)
         self.active_worker.start()
 
-    def _on_convert_progress(self, cur: int, tot: int, desc: str):
-        self.prog_convert.setMaximum(tot)
-        self.prog_convert.setValue(cur)
-        self.lbl_conv_stats.setText(desc)
-
     def _on_convert_finished(self, stats: dict):
         self.btn_run_convert.setEnabled(True)
         self.mascot.set_state(DancingSvgMascot.STATE_SUCCESS)
-        self.prog_convert.setValue(self.prog_convert.maximum())
+        self.prog_convert.setValue(100)
 
-        msg = (
-            f"Conversion Complete! (Mode: {stats['mode'].upper()})\n"
-            f"• Total Images Processed: {stats['total_images']}\n"
-            f"• Label Files Written: {stats['converted_images']}\n"
-            f"• Total Annotations: {stats['total_annotations_written']}\n"
-            f"• Classes: {len(stats['classes'])} ({', '.join(stats['classes'][:5])}...)\n"
-            f"• Output Folder: {stats['output_labels_dir']}"
+        summary = (
+            f"Converted: {stats.get('total_labels', 0)} label files | "
+            f"Annotations: {stats.get('total_annotations', 0)} | "
+            f"Mode: {stats.get('mode', 'unknown')}"
         )
-        self.lbl_conv_stats.setText(msg)
-        QMessageBox.information(self, "Conversion Succeeded", msg)
+        self.lbl_conv_stats.setText(summary)
+        QMessageBox.information(self, "Conversion Complete", f"COCO to YOLO Conversion Completed!\n\n{summary}\nOutput: {self.txt_conv_labels_dst.text()}")
 
     def _on_convert_error(self, err_msg: str):
         self.btn_run_convert.setEnabled(True)
         self.mascot.set_state(DancingSvgMascot.STATE_IDLE)
         self.lbl_conv_stats.setText(f"Conversion Error: {err_msg}")
-        QMessageBox.critical(self, "Conversion Error", f"Failed to convert annotations:\n{err_msg}")
+        QMessageBox.critical(self, "Conversion Error", f"Conversion failed:\n{err_msg}")
 
     # -----------------------------------------------------------------
-    # Dataset Splitter Slots
+    # Step 5: Dataset Splitter Slots
     # -----------------------------------------------------------------
     def _on_run_split(self):
-        img_dir = Path(self.txt_split_img_src.text().strip())
-        lbl_dir = Path(self.txt_split_lbl_src.text().strip())
-        out_dst = Path(self.txt_split_dst.text().strip())
+        img_src = Path(self.txt_split_img_src.text().strip())
+        lbl_src = Path(self.txt_split_lbl_src.text().strip())
+        dst = Path(self.txt_split_dst.text().strip())
 
-        if not img_dir.exists():
-            QMessageBox.warning(self, "Folder Not Found", f"Images folder does not exist:\n{img_dir}")
-            return
-        if not lbl_dir.exists():
-            QMessageBox.warning(self, "Folder Not Found", f"Labels folder does not exist:\n{lbl_dir}")
+        if not img_src.exists():
+            QMessageBox.warning(self, "Images Not Found", f"Images directory not found:\n{img_src}")
             return
 
         r_train = self.spin_train.value() / 100.0
         r_val = self.spin_val.value() / 100.0
         r_test = self.spin_test.value() / 100.0
+        total_r = r_train + r_val + r_test
 
-        coco_json = self.data_dir / "annotations" / "instances_default.json"
+        if abs(total_r - 1.0) > 0.01:
+            QMessageBox.warning(self, "Invalid Ratios", f"Train + Val + Test ratios must sum to 100% (currently {int(total_r*100)}%).")
+            return
 
         self.btn_run_split.setEnabled(False)
         self.prog_split.setValue(0)
-        self.lbl_split_stats.setText("Splitting dataset and generating data.yaml...")
-        self.mascot.set_state(DancingSvgMascot.STATE_PROCESSING)
+        self.lbl_split_stats.setText("Partitioning dataset (100% images included)...")
+        self.mascot.set_state(DancingSvgMascot.STATE_DOWNLOADING)
 
         self.active_worker = SplitWorker(
-            splitter=self.splitter_engine,
-            img_dir=img_dir,
-            lbl_dir=lbl_dir,
-            out_dir=out_dst,
-            r_train=r_train,
-            r_val=r_val,
-            r_test=r_test,
-            coco_json=coco_json if coco_json.exists() else None
+            self.splitter_engine, img_src, lbl_src, dst, (r_train, r_val, r_test), copy_mode=True
         )
-        self.active_worker.progress_signal.connect(self._on_split_progress)
+        self.active_worker.progress_signal.connect(lambda c, t, d: (self.prog_split.setMaximum(t), self.prog_split.setValue(c), self.lbl_split_stats.setText(d)))
         self.active_worker.finished_signal.connect(self._on_split_finished)
         self.active_worker.error_signal.connect(self._on_split_error)
         self.active_worker.start()
 
-    def _on_split_progress(self, cur: int, tot: int, desc: str):
-        self.prog_split.setMaximum(tot)
-        self.prog_split.setValue(cur)
-        self.lbl_split_stats.setText(desc)
-
     def _on_split_finished(self, stats: dict):
         self.btn_run_split.setEnabled(True)
         self.mascot.set_state(DancingSvgMascot.STATE_SUCCESS)
-        self.prog_split.setValue(self.prog_split.maximum())
+        self.prog_split.setValue(100)
 
-        yaml_path = stats.get("data_yaml")
-        if yaml_path:
-            self.txt_data_yaml.setText(str(yaml_path))
-
-        msg = (
-            f"Dataset Split Complete!\n"
-            f"• Total Images (100%): {stats['total_images']}\n"
-            f"• Train Set: {stats['train_count']} images\n"
-            f"• Validation Set: {stats['val_count']} images\n"
-            f"• Test Set: {stats['test_count']} images\n"
-            f"• Labeled Images: {stats['labeled_images']} | Background Images: {stats['background_images']}\n"
-            f"• Created: {yaml_path}"
+        summary = (
+            f"Train: {stats.get('train_count', 0)} | "
+            f"Val: {stats.get('val_count', 0)} | "
+            f"Test: {stats.get('test_count', 0)} | "
+            f"Total: {stats.get('total_images', 0)} images | "
+            f"data.yaml generated!"
         )
-        self.lbl_split_stats.setText(msg)
+        self.lbl_split_stats.setText(summary)
         self._refresh_yaml_preview()
-        QMessageBox.information(self, "Split Succeeded", msg)
+        QMessageBox.information(self, "Split Complete", f"Dataset Partition Completed!\n\n{summary}\nOutput: {self.txt_split_dst.text()}")
 
     def _on_split_error(self, err_msg: str):
         self.btn_run_split.setEnabled(True)
         self.mascot.set_state(DancingSvgMascot.STATE_IDLE)
         self.lbl_split_stats.setText(f"Split Error: {err_msg}")
-        QMessageBox.critical(self, "Split Error", f"Failed to split dataset:\n{err_msg}")
+        QMessageBox.critical(self, "Split Error", f"Split failed:\n{err_msg}")
 
     # -----------------------------------------------------------------
-    # YOLO Trainer Slots
+    # Step 6: YOLO Auto-Trainer Slots
     # -----------------------------------------------------------------
-    def _browse_model_pt(self):
-        f, _ = QFileDialog.getOpenFileName(self, "Select YOLO Model Weights", "", "PyTorch Weights (*.pt)")
-        if f:
-            self.txt_custom_model.setText(str(Path(f).resolve()))
-
-    def _browse_data_yaml(self):
-        f, _ = QFileDialog.getOpenFileName(self, "Select data.yaml", str(self.data_dir), "YAML Files (*.yaml *.yml)")
-        if f:
-            self.txt_data_yaml.setText(str(Path(f).resolve()))
-            self._refresh_yaml_preview()
-
     def _update_model_presets(self):
         task = self.cmb_train_task.currentText()
         self.cmb_model_preset.clear()
         if task == "detect":
             presets = [
-                "yolo11n.pt", "yolo11s.pt", "yolo11m.pt", "yolo11l.pt", "yolo11x.pt",
-                "yolov8n.pt", "yolov8s.pt", "yolov8m.pt", "yolov8l.pt",
+                "yolo11n.pt", "yolo11s.pt", "yolo11m.pt", "yolo11l.pt",
+                "yolov8n.pt", "yolov8s.pt", "yolov8m.pt",
                 "yolo26n.pt", "yolo26s.pt", "yolo26m.pt", "yolo26l.pt"
             ]
         else:
             presets = [
                 "yolo11n-seg.pt", "yolo11s-seg.pt", "yolo11m-seg.pt", "yolo11l-seg.pt",
                 "yolov8n-seg.pt", "yolov8s-seg.pt", "yolov8m-seg.pt",
-                "yolo26n-seg.pt", "yolo26s-seg.pt", "yolo26m-seg.pt"
+                "yolo26n-seg.pt", "yolo26s-seg.pt", "yolo26m-seg.pt", "yolo26l-seg.pt"
             ]
         self.cmb_model_preset.addItems(presets)
         self._update_run_preview()
 
     def _update_run_preview(self):
-        if not hasattr(self, "txt_custom_run_name") or not hasattr(self, "cmb_train_task") or not hasattr(self, "txt_runs_base"):
-            return
         task = self.cmb_train_task.currentText()
-        custom_name = self.txt_custom_run_name.text().strip() or "yolo_model"
-        base_dir = Path(self.txt_runs_base.text().strip()) / task
+        custom_name = self.txt_custom_run_name.text().strip() or "my_yolo_model"
+        base_runs = Path(self.txt_runs_base.text().strip()) / task
+        next_version_name, _ = get_next_run_version(base_runs, custom_name)
 
-        next_version_name, _ = get_next_run_version(base_dir, custom_name)
-        preview_text = (
-            f"Target Directory: runs/{task}/{next_version_name}/\n"
-            f"Weights Saved to: runs/{task}/{next_version_name}/weights/best.pt AND weights/{custom_name}.pt"
+        # EXACT USER REQUIREMENT:
+        # Renamed inside weights folder: runs/detect/[custom_name]_v[run_num]/weights/[custom_name]_v[run_num].pt
+        # NO separate root weights folder!
+        self.lbl_run_preview.setText(
+            f"Weights Destination: runs/{task}/{next_version_name}/weights/{next_version_name}.pt (and last.pt)"
         )
-        self.lbl_run_preview.setText(preview_text)
 
     def _on_auto_tune_clicked(self):
-        dataset_path = Path(self.txt_data_yaml.text().strip()).parent
-        images_dir = dataset_path / "images" / "train"
+        yaml_path = Path(self.txt_data_yaml.text().strip())
+        if not yaml_path.exists():
+            QMessageBox.warning(self, "File Not Found", f"data.yaml not found at:\n{yaml_path}")
+            return
 
-        num_images = 50
-        if images_dir.exists():
-            exts = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
-            num_images = len([p for p in images_dir.iterdir() if p.suffix.lower() in exts])
-
-        recommended = auto_tune_hyperparameters(num_images, num_classes=1)
-        self.spin_epochs.setValue(recommended["epochs"])
-        self.spin_batch.setValue(recommended["batch"])
-        self.spin_imgsz.setValue(recommended["imgsz"])
-        self.spin_patience.setValue(recommended["patience"])
-        self.spin_lr0.setValue(recommended["lr0"])
-        self.cmb_optimizer.setCurrentText(recommended["optimizer"])
-        self.txt_device.setText(recommended["device"])
-        self.spin_workers.setValue(recommended["workers"])
+        params = auto_tune_hyperparameters(yaml_path)
+        self.spin_epochs.setValue(params["epochs"])
+        self.spin_batch.setValue(params["batch"])
+        self.spin_imgsz.setValue(params["imgsz"])
+        self.spin_patience.setValue(params["patience"])
+        self.spin_lr0.setValue(params["lr0"])
 
         QMessageBox.information(
-            self, "Auto-Tune Applied",
-            f"⚡ Hyperparameters tuned based on {num_images} training images:\n"
-            f"• Epochs: {recommended['epochs']}\n"
-            f"• Batch Size: {recommended['batch']}\n"
-            f"• Early Stopping (Patience): {recommended['patience']} epochs\n"
-            f"• Optimizer: {recommended['optimizer']}\n"
-            f"• Device: {recommended['device']}\n\n"
-            f"You can modify any of these values before training."
+            self,
+            "Auto-Tune Completed",
+            f"Recommended Hyperparameters applied based on dataset size:\n\n"
+            f"• Epochs: {params['epochs']}\n"
+            f"• Batch Size: {params['batch']}\n"
+            f"• Image Size: {params['imgsz']}\n"
+            f"• Early Stopping (Patience): {params['patience']}\n"
+            f"• Learning Rate (lr0): {params['lr0']}"
         )
 
     def _on_start_training(self):
-        data_yaml = Path(self.txt_data_yaml.text().strip())
-        if not data_yaml.exists():
-            QMessageBox.warning(self, "File Not Found", f"data.yaml not found at:\n{data_yaml}\nPlease run Split step first.")
+        yaml_path = Path(self.txt_data_yaml.text().strip())
+        if not yaml_path.exists():
+            QMessageBox.warning(self, "Missing data.yaml", f"Cannot find dataset configuration at:\n{yaml_path}")
             return
 
         task = self.cmb_train_task.currentText()
-        custom_model = self.txt_custom_model.text().strip()
-        model_name = custom_model if custom_model else self.cmb_model_preset.currentText()
-        custom_run_name = self.txt_custom_run_name.text().strip() or "yolo_model"
-        base_runs = Path(self.txt_runs_base.text().strip())
+        custom_pt = self.txt_custom_model.text().strip()
+        model_name = custom_pt if (custom_pt and Path(custom_pt).exists()) else self.cmb_model_preset.currentText()
+        run_name = self.txt_custom_run_name.text().strip() or "yolo_model"
+        base_runs_dir = Path(self.txt_runs_base.text().strip())
 
-        batch_val = self.spin_batch.value()
         hyperparams = {
             "epochs": self.spin_epochs.value(),
-            "batch": batch_val if batch_val > 0 else -1,
+            "batch": self.spin_batch.value(),
             "imgsz": self.spin_imgsz.value(),
             "patience": self.spin_patience.value(),
             "lr0": self.spin_lr0.value(),
             "optimizer": self.cmb_optimizer.currentText(),
-            "device": self.txt_device.text().strip(),
-            "workers": self.spin_workers.value(),
+            "device": "0" if torch.cuda.is_available() else "cpu",
         }
 
         self.btn_start_train.setEnabled(False)
         self.btn_stop_train.setEnabled(True)
-        self.mascot.set_state(DancingSvgMascot.STATE_TRAINING)
+        self.prog_train.setMaximum(self.spin_epochs.value())
+        self.prog_train.setValue(0)
         self.txt_train_log.clear()
+        self.mascot.set_state(DancingSvgMascot.STATE_TRAINING)
 
         self.active_worker = TrainWorker(
-            engine=self.trainer_engine,
-            task=task,
-            model_name=model_name,
-            data_yaml=data_yaml,
-            run_name=custom_run_name,
-            base_dir=base_runs,
-            hyperparams=hyperparams,
+            self.trainer_engine, task, model_name, yaml_path, run_name, base_runs_dir, hyperparams
         )
-        self.active_worker.log_signal.connect(self._on_train_log)
+        self.active_worker.log_signal.connect(self._append_train_log)
         self.active_worker.epoch_signal.connect(self._on_train_epoch)
         self.active_worker.finished_signal.connect(self._on_train_finished)
         self.active_worker.error_signal.connect(self._on_train_error)
         self.active_worker.start()
 
     def _on_stop_training(self):
-        self.trainer_engine.stop_training()
-        self.txt_train_log.appendPlainText("⏹️ User requested training stop. Finalizing current epoch...")
+        if self.trainer_engine:
+            self.trainer_engine.stop_training()
+            self.btn_stop_train.setEnabled(False)
+            self.txt_train_log.appendPlainText("\n⚠️ Stopping training after current batch...")
 
-    def _on_train_log(self, msg: str):
+    def _append_train_log(self, msg: str):
         self.txt_train_log.appendPlainText(msg)
-        sb = self.txt_train_log.verticalScrollBar()
-        sb.setValue(sb.maximum())
+        self.txt_train_log.verticalScrollBar().setValue(self.txt_train_log.verticalScrollBar().maximum())
 
-    def _on_train_epoch(self, epoch: int, total_epochs: int, metrics: dict):
-        pct = int((epoch / total_epochs) * 100) if total_epochs > 0 else 0
-        self.prog_train.setValue(pct)
-
-        self.lbl_metric_epoch.setText(f"Epoch: {epoch}/{total_epochs}")
-        loss_val = metrics.get("loss", 0.0)
-        self.lbl_metric_loss.setText(f"Loss: {loss_val:.4f}")
-
-        fitness_val = metrics.get("fitness", 0.0)
-        best_fitness = metrics.get("best_fitness", 0.0)
-        self.lbl_metric_fitness.setText(f"Fitness: {fitness_val:.4f} (Best: {best_fitness:.4f})")
+    def _on_train_epoch(self, epoch: int, total: int, metrics: dict):
+        self.prog_train.setValue(epoch)
+        loss = metrics.get("loss", 0.0)
+        fit = metrics.get("fitness", 0.0)
+        fit_str = f" | Fitness: {fit:.4f}" if fit else ""
+        self.lbl_train_metrics.setText(f"Epoch {epoch}/{total} | Loss: {loss:.4f}{fit_str}")
 
     def _on_train_finished(self, res: dict):
         self.btn_start_train.setEnabled(True)
         self.btn_stop_train.setEnabled(False)
         self.mascot.set_state(DancingSvgMascot.STATE_SUCCESS)
-        self.prog_train.setValue(100)
+        self.prog_train.setValue(self.prog_train.maximum())
         self._update_run_preview()
 
         run_dir = res.get("run_dir")
         best_pt = res.get("best_pt")
-        custom_pt = res.get("custom_pt")
+        last_pt = res.get("last_pt")
+
+        if best_pt:
+            self.last_trained_weight = Path(best_pt)
+            self.txt_test_model.setText(str(best_pt))
 
         summary = (
             f"🎉 YOLO Training Finished Successfully!\n\n"
-            f"• Output Folder: {run_dir}\n"
-            f"• Best Weights: {best_pt}\n"
-            f"• Custom Named Weights: {custom_pt}\n\n"
-            f"Weights and logs are saved in runs/ and weights/."
+            f"• Output Run Folder: {run_dir}\n"
+            f"• Renamed Best Weights: {best_pt}\n"
+            f"• Last Checkpoint: {last_pt}\n\n"
+            f"The best weights have been renamed inside {run_dir / 'weights'}."
         )
         QMessageBox.information(self, "Training Complete", summary)
 
@@ -1774,3 +2078,242 @@ class MainWindow(QMainWindow):
                 self.txt_yaml_preview.setPlainText(f"Error reading {yaml_path}:\n{e}")
         else:
             self.txt_yaml_preview.setPlainText(f"data.yaml not found at:\n{yaml_path}")
+
+    # -----------------------------------------------------------------
+    # Step 7: Model Test / Inference Slots
+    # -----------------------------------------------------------------
+    def _browse_test_model_pt(self):
+        f, _ = QFileDialog.getOpenFileName(self, "Select YOLO Model Weights", "", "PyTorch Weights (*.pt)")
+        if f:
+            self.txt_test_model.setText(f)
+
+    def _on_test_source_mode_changed(self):
+        idx = self.btn_grp_source.checkedId()
+        if idx == 0:
+            self.lbl_test_src_path.setText("Image File Path:")
+            self.txt_test_source.setPlaceholderText("Select image to evaluate (.jpg, .png, ...)")
+        elif idx == 1:
+            self.lbl_test_src_path.setText("Images Folder Path:")
+            self.txt_test_source.setPlaceholderText("Select folder containing test images...")
+        elif idx == 2:
+            self.lbl_test_src_path.setText("Video File Path:")
+            self.txt_test_source.setPlaceholderText("Select video to evaluate (.mp4, .avi, ...)")
+
+    def _browse_test_source(self):
+        idx = self.btn_grp_source.checkedId()
+        if idx == 0:
+            f, _ = QFileDialog.getOpenFileName(self, "Select Test Image", "", "Image Files (*.jpg *.jpeg *.png *.bmp *.webp)")
+            if f:
+                self.txt_test_source.setText(f)
+        elif idx == 1:
+            d = QFileDialog.getExistingDirectory(self, "Select Folder of Images")
+            if d:
+                self.txt_test_source.setText(d)
+        elif idx == 2:
+            f, _ = QFileDialog.getOpenFileName(self, "Select Video File", "", "Video Files (*.mp4 *.avi *.mov *.mkv *.webm)")
+            if f:
+                self.txt_test_source.setText(f)
+
+    def _on_run_test(self):
+        model_p = Path(self.txt_test_model.text().strip())
+        src_p = Path(self.txt_test_source.text().strip())
+        save_enabled = self.chk_save_test.isChecked()
+        save_dir = Path(self.txt_test_save_dir.text().strip())
+
+        if not model_p.exists():
+            QMessageBox.warning(self, "Model Not Found", f"Model weights not found:\n{model_p}")
+            return
+
+        if not src_p.exists():
+            QMessageBox.warning(self, "Source Not Found", f"Input test source not found:\n{src_p}")
+            return
+
+        mode_id = self.btn_grp_source.checkedId()
+        mode_str = "image" if mode_id == 0 else ("folder" if mode_id == 1 else "video")
+
+        conf = self.spin_test_conf.value()
+        iou = self.spin_test_iou.value()
+
+        self.btn_run_test.setEnabled(False)
+        self.btn_stop_test.setEnabled(True)
+        self.prog_test.setValue(0)
+        self.lbl_test_status.setText(f"Running inference ({mode_str.upper()})...")
+        self.mascot.set_state(DancingSvgMascot.STATE_DOWNLOADING)
+
+        self.active_worker = TestInferenceWorker(
+            self.tester_engine, mode_str, model_p, src_p, conf, iou, save_enabled, save_dir
+        )
+        self.active_worker.progress_signal.connect(self._on_test_progress)
+        self.active_worker.frame_signal.connect(self._on_test_frame)
+        self.active_worker.finished_signal.connect(self._on_test_finished)
+        self.active_worker.error_signal.connect(self._on_test_error)
+        self.active_worker.start()
+
+    def _on_stop_test(self):
+        if self.tester_engine:
+            self.tester_engine.stop()
+            self.btn_stop_test.setEnabled(False)
+            self.lbl_test_status.setText("Aborting inference...")
+
+    def _on_test_progress(self, cur: int, tot: int, desc: str):
+        self.prog_test.setMaximum(tot)
+        self.prog_test.setValue(cur)
+        self.lbl_test_status.setText(desc)
+
+    def _on_test_frame(self, frame_bgr: np.ndarray, cur: int, tot: int, summary: dict):
+        pix = bgr_to_qpixmap(frame_bgr)
+        if not pix.isNull():
+            scaled = pix.scaled(self.lbl_test_preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            self.lbl_test_preview.setPixmap(scaled)
+
+        # Update counter
+        self.lbl_test_img_counter.setText(f"Frame {cur} / {tot}")
+
+        # Update summary text
+        badge_text = ", ".join([f"{k}: {v}" for k, v in summary.items()]) or "No objects detected in frame"
+        self.lbl_test_classes_badge.setText(f"Active Objects: {badge_text}")
+
+    def _on_test_finished(self, out: dict):
+        self.btn_run_test.setEnabled(True)
+        self.btn_stop_test.setEnabled(False)
+        self.mascot.set_state(DancingSvgMascot.STATE_SUCCESS)
+        self.prog_test.setValue(self.prog_test.maximum())
+
+        mode = out.get("mode")
+        data = out.get("data", {})
+
+        if mode == "image":
+            annotated_bgr = data.get("annotated_bgr")
+            pix = bgr_to_qpixmap(annotated_bgr)
+            if not pix.isNull():
+                scaled = pix.scaled(self.lbl_test_preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                self.lbl_test_preview.setPixmap(scaled)
+
+            self.lbl_test_img_counter.setText("Image 1 / 1")
+            self.btn_prev_test_img.setEnabled(False)
+            self.btn_next_test_img.setEnabled(False)
+
+            detections = data.get("detections", [])
+            self._populate_detections_table(detections)
+
+            cls_sum = data.get("classes_summary", {})
+            badge_str = ", ".join([f"{k} ({v})" for k, v in cls_sum.items()]) or "No objects detected"
+            saved_msg = f" | Saved: {data.get('saved_path')}" if data.get('saved_path') else ""
+            self.lbl_test_classes_badge.setText(f"Found: {badge_str}{saved_msg}")
+            self.lbl_test_status.setText(f"Single image test complete! Found {len(detections)} objects.{saved_msg}")
+
+        elif mode == "folder":
+            self.folder_test_results = data.get("results", [])
+            self.current_folder_test_idx = 0
+
+            if self.folder_test_results:
+                self._show_folder_test_item(0)
+                self.btn_prev_test_img.setEnabled(False)
+                self.btn_next_test_img.setEnabled(len(self.folder_test_results) > 1)
+            else:
+                self.lbl_test_preview.setText("No images evaluated.")
+
+            cls_sum = data.get("classes_summary", {})
+            badge_str = ", ".join([f"{k}: {v}" for k, v in cls_sum.items()]) or "No objects detected"
+            saved_msg = f" | Results in: {data.get('saved_dir')}" if data.get('saved_dir') else ""
+            self.lbl_test_classes_badge.setText(f"Folder Summary: {badge_str}")
+            self.lbl_test_status.setText(f"Batch test complete! Processed {len(self.folder_test_results)} images.{saved_msg}")
+
+        elif mode == "video":
+            annotated_bgr = data.get("last_annotated")
+            if annotated_bgr is not None:
+                pix = bgr_to_qpixmap(annotated_bgr)
+                if not pix.isNull():
+                    scaled = pix.scaled(self.lbl_test_preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                    self.lbl_test_preview.setPixmap(scaled)
+
+            cls_sum = data.get("classes_summary", {})
+            badge_str = ", ".join([f"{k}: {v}" for k, v in cls_sum.items()]) or "No objects detected"
+            saved_msg = f"\nSaved video to: {data.get('saved_path')}" if data.get('saved_path') else ""
+            self.lbl_test_classes_badge.setText(f"Video Summary: {badge_str}")
+            self.lbl_test_status.setText(f"Video test complete! Processed {data.get('processed_frames')} frames.{saved_msg}")
+
+        QMessageBox.information(self, "Test Complete", f"Model prediction completed successfully!\nMode: {mode.upper()}")
+
+    def _show_folder_test_item(self, idx: int):
+        if not self.folder_test_results or idx < 0 or idx >= len(self.folder_test_results):
+            return
+
+        self.current_folder_test_idx = idx
+        item = self.folder_test_results[idx]
+
+        annotated_bgr = item.get("annotated_bgr")
+        pix = bgr_to_qpixmap(annotated_bgr)
+        if not pix.isNull():
+            scaled = pix.scaled(self.lbl_test_preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            self.lbl_test_preview.setPixmap(scaled)
+
+        total = len(self.folder_test_results)
+        self.lbl_test_img_counter.setText(f"Image {idx + 1} / {total} ({item.get('file_name')})")
+        self.btn_prev_test_img.setEnabled(idx > 0)
+        self.btn_next_test_img.setEnabled(idx < total - 1)
+
+        detections = item.get("detections", [])
+        self._populate_detections_table(detections)
+
+    def _on_prev_test_img(self):
+        if self.current_folder_test_idx > 0:
+            self._show_folder_test_item(self.current_folder_test_idx - 1)
+
+    def _on_next_test_img(self):
+        if self.current_folder_test_idx < len(self.folder_test_results) - 1:
+            self._show_folder_test_item(self.current_folder_test_idx + 1)
+
+    def _populate_detections_table(self, detections: list[dict]):
+        self.tbl_test_detections.setRowCount(0)
+        self.tbl_test_detections.setRowCount(len(detections))
+
+        for row, det in enumerate(detections):
+            c_item = QTableWidgetItem(str(det["class_name"]))
+            c_item.setTextAlignment(Qt.AlignCenter)
+            self.tbl_test_detections.setItem(row, 0, c_item)
+
+            conf_item = QTableWidgetItem(f"{det['conf']:.2%}")
+            conf_item.setTextAlignment(Qt.AlignCenter)
+            self.tbl_test_detections.setItem(row, 1, conf_item)
+
+            coords = det.get("box", [])
+            coord_str = f"[{int(coords[0])}, {int(coords[1])}, {int(coords[2])}, {int(coords[3])}]" if len(coords) >= 4 else "-"
+            box_item = QTableWidgetItem(coord_str)
+            box_item.setTextAlignment(Qt.AlignCenter)
+            self.tbl_test_detections.setItem(row, 2, box_item)
+
+            id_item = QTableWidgetItem(str(det.get("id", row)))
+            id_item.setTextAlignment(Qt.AlignCenter)
+            self.tbl_test_detections.setItem(row, 3, id_item)
+
+    def _on_test_error(self, err_msg: str):
+        self.btn_run_test.setEnabled(True)
+        self.btn_stop_test.setEnabled(False)
+        self.mascot.set_state(DancingSvgMascot.STATE_IDLE)
+        self.lbl_test_status.setText(f"Test Error: {err_msg}")
+        QMessageBox.critical(self, "Inference Error", f"Model testing encountered an error:\n{err_msg}")
+
+    # -----------------------------------------------------------------
+    # Helper File & Folder Browsers
+    # -----------------------------------------------------------------
+    def _browse_folder(self, target_line_edit: QLineEdit):
+        folder = QFileDialog.getExistingDirectory(self, "Select Directory", target_line_edit.text())
+        if folder:
+            target_line_edit.setText(folder)
+
+    def _browse_file(self, target_line_edit: QLineEdit, filter_str: str = "All Files (*)"):
+        f, _ = QFileDialog.getOpenFileName(self, "Select File", target_line_edit.text(), filter_str)
+        if f:
+            target_line_edit.setText(f)
+
+    def _browse_model_pt(self):
+        f, _ = QFileDialog.getOpenFileName(self, "Select YOLO Model Weights", "", "PyTorch Weights (*.pt)")
+        if f:
+            self.txt_custom_model.setText(f)
+
+    def _browse_data_yaml(self):
+        f, _ = QFileDialog.getOpenFileName(self, "Select data.yaml", self.txt_data_yaml.text(), "YAML Files (*.yaml *.yml)")
+        if f:
+            self.txt_data_yaml.setText(f)
+            self._refresh_yaml_preview()

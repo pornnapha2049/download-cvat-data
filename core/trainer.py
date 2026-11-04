@@ -236,17 +236,16 @@ class YoloTrainerEngine:
         best_pt = weights_dir / "best.pt"
         last_pt = weights_dir / "last.pt"
 
-        # Rename / copy best.pt to user's custom named weight:
-        # (ตรง best.pt ให้ใช้ชื่อตาม folderที่ user ตั้ง)
-        custom_named_pt = weights_dir / f"{custom_run_name}.pt"
-        custom_versioned_pt = weights_dir / f"{versioned_run_name}.pt"
+        # Directly rename best.pt to user's custom named versioned weight:
+        # e.g. runs/detect/{custom_name}_v{run_num}/weights/{versioned_run_name}.pt
+        target_custom_pt = weights_dir / f"{versioned_run_name}.pt"
 
         if best_pt.exists():
-            shutil.copy2(str(best_pt), str(custom_named_pt))
-            shutil.copy2(str(best_pt), str(custom_versioned_pt))
+            if target_custom_pt.exists():
+                target_custom_pt.unlink()
+            best_pt.rename(target_custom_pt)
             if log_callback:
-                log_callback(f"✅ Saved custom named weights: {custom_named_pt}")
-                log_callback(f"✅ Saved versioned weights: {custom_versioned_pt}")
+                log_callback(f"✅ Renamed best.pt -> {target_custom_pt.name} inside {weights_dir}")
 
         if log_callback:
             log_callback(f"🎉 Training session finished! Run saved to: {target_run_dir}")
@@ -254,8 +253,8 @@ class YoloTrainerEngine:
         return {
             "run_dir": target_run_dir,
             "run_name": versioned_run_name,
-            "best_pt": best_pt if best_pt.exists() else None,
-            "custom_pt": custom_named_pt if custom_named_pt.exists() else None,
+            "best_pt": target_custom_pt if target_custom_pt.exists() else None,
+            "custom_pt": target_custom_pt if target_custom_pt.exists() else None,
             "last_pt": last_pt if last_pt.exists() else None,
             "results": results,
         }
