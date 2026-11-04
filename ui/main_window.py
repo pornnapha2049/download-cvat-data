@@ -1144,10 +1144,6 @@ class MainWindow(QMainWindow):
         self.lbl_cvat_status.setStyleSheet("color: #6b7f88; font-weight: 600;")
         status_row.addWidget(self.lbl_cvat_status, stretch=1)
 
-        self.btn_page1_next = QPushButton("Next: Merge Datasets ➔")
-        self.btn_page1_next.setProperty("class", "StepNavButton")
-        self.btn_page1_next.clicked.connect(lambda: self._go_to_step(1))
-        status_row.addWidget(self.btn_page1_next)
 
         layout.addLayout(status_row)
         return page
@@ -1229,13 +1225,6 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(paths_card)
 
-        advance_row = QHBoxLayout()
-        advance_row.addStretch()
-        self.btn_page2_next = QPushButton("Next: Convert to YOLO ➔")
-        self.btn_page2_next.setProperty("class", "StepNavButton")
-        self.btn_page2_next.clicked.connect(lambda: self._go_to_step(2))
-        advance_row.addWidget(self.btn_page2_next)
-        layout.addLayout(advance_row)
 
         layout.addStretch()
         return page
@@ -1356,13 +1345,6 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(conv_paths)
 
-        advance_row = QHBoxLayout()
-        advance_row.addStretch()
-        self.btn_page3_next = QPushButton("Next: Split Dataset ➔")
-        self.btn_page3_next.setProperty("class", "StepNavButton")
-        self.btn_page3_next.clicked.connect(lambda: self._go_to_step(3))
-        advance_row.addWidget(self.btn_page3_next)
-        layout.addLayout(advance_row)
 
         layout.addStretch()
         return page
@@ -1483,13 +1465,6 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(ratios_card)
 
-        advance_row = QHBoxLayout()
-        advance_row.addStretch()
-        self.btn_page4_next = QPushButton("Next: YOLO Auto-Trainer ➔")
-        self.btn_page4_next.setProperty("class", "StepNavButton")
-        self.btn_page4_next.clicked.connect(lambda: self._go_to_step(4))
-        advance_row.addWidget(self.btn_page4_next)
-        layout.addLayout(advance_row)
 
         layout.addStretch()
         return page
@@ -1687,13 +1662,6 @@ class MainWindow(QMainWindow):
         self.train_result_card.hide()
         layout.addWidget(self.train_result_card)
 
-        advance_row = QHBoxLayout()
-        advance_row.addStretch()
-        self.btn_page5_next = QPushButton("Next: Test Model ➔")
-        self.btn_page5_next.setProperty("class", "StepNavButton")
-        self.btn_page5_next.clicked.connect(lambda: self._go_to_step(5))
-        advance_row.addWidget(self.btn_page5_next)
-        layout.addLayout(advance_row)
 
         self._update_model_presets()
         return page
@@ -1985,6 +1953,16 @@ class MainWindow(QMainWindow):
         self.lbl_step_indicator.setText(f"Step {step_idx + 1} of {self.pages.count()}")
         self.btn_footer_prev.setEnabled(step_idx > 0)
         self.btn_footer_next.setEnabled(step_idx < self.pages.count() - 1)
+        if step_idx < len(self.STEP_TITLES) - 1:
+            nxt = self.STEP_TITLES[step_idx + 1][0].split(". ", 1)[-1]
+            self.btn_footer_next.setText(f"Next: {nxt}")
+        else:
+            self.btn_footer_next.setText("Next Step")
+        if step_idx > 0:
+            prv = self.STEP_TITLES[step_idx - 1][0].split(". ", 1)[-1]
+            self.btn_footer_prev.setText(f"Back: {prv}")
+        else:
+            self.btn_footer_prev.setText("Previous")
 
         # Refresh preview if going to Train (Step 5 / index 4)
         if step_idx == 4:
