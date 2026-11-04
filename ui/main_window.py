@@ -1,12 +1,11 @@
 """
 Main Window for the CVAT-to-YOLO GUI application.
-Features a dedicated Authentication Screen (Login Page) followed by
-an enterprise 5-Step Wizard Workflow:
-1. CVAT Task Explorer & Download (COCO 1.0 + unzipping + cleanup default folder)
-2. Task Merging & COCO-to-YOLO Conversion (Detection & Segmentation)
-3. Train/Val/Test Splitter (including all background images)
-4. YOLO Training with Auto-Tuning, Early Stopping, and Auto-Versioning
-5. Runs & Weights Explorer
+All Pages are 100% Standalone Tools with a Single Unified 'data' Directory:
+1. CVAT Downloader (Server connection with NO default URL, filtering, downloading & cleanup of /images/default)
+2. Merge Datasets (Deduplicates images with MD5 and unifies COCO 1.0 annotations)
+3. COCO to YOLO Converter (Detection Bounding Box or Segmentation Polygon)
+4. Dataset Splitter (Train/Val/Test partitions including all background images, generates data.yaml)
+5. YOLO Auto-Trainer & Explorer (Auto-Tune, Early Stopping, versioned runs, and custom weights)
 """
 
 import os
@@ -53,86 +52,47 @@ class CvatAuthWorker(QThread):
 
     def run(self):
         try:
-            login_info = self.client.login(self.url, self.username, self.password)
-            projects = self.client.refresh_projects()
+            info = self.client.connect(self.url, self.username, self.password)
+            projects = self.client.get_projects()
             tasks = self.client.get_tasks()
-            self.finished_signal.emit(login_info, projects, tasks)
-        except Exception as e:
-            self.error_signal.emit(str(e))
-
-
-class CvatFetchWorker(QThread):
-    finished_signal = pyqtSignal(list, list)  # projects, tasks
-    error_signal = pyqtSignal(str)
-
-    def __init__(self, client: CvatClientWrapper, project_id=None, stage=None, state=None, status=None):
-        super().__init__()
-        self.client = client
-        self.project_id = project_id
-        self.stage = stage
-        self.state = state
-        self.status = status
-
-    def run(self):
-        try:
-            projects = self.client.refresh_projects()
-            tasks = self.client.get_tasks(
-                project_id=self.project_id,
-                stage_filter=self.stage,
-                state_filter=self.state,
-                status_filter=self.status,
-            )
-            self.finished_signal.emit(projects, tasks)
+            self.finished_signal.emit(info, projects, tasks)
         except Exception as e:
             self.error_signal.emit(str(e))
 
 
 class CvatDownloadWorker(QThread):
     progress_signal = pyqtSignal(int, int, str)
-    task_completed_signal = pyqtSignal(int, str, str)  # task_id, name, folder
-    all_completed_signal = pyqtSignal(list)
+    finished_signal = pyqtSignal(list)
     error_signal = pyqtSignal(str)
 
-    def __init__(self, client: CvatClientWrapper, selected_tasks: list[dict], dest_dir: Path):
+    def __init__(self, client: CvatClientWrapper, tasks: list[dict], dest_folder: Path):
         super().__init__()
         self.client = client
-        self.selected_tasks = selected_tasks
-        self.dest_dir = dest_dir
-        self.is_cancelled = False
+        self.tasks = tasks
+        self.dest_folder = dest_folder
 
     def run(self):
+        results = []
+        total_tasks = len(self.tasks)
         try:
-            completed_folders = []
-            total = len(self.selected_tasks)
+            for idx, task in enumerate(self.tasks):
+                task_id = task["id"]
+                task_name = task["name"]
 
-            for idx, task in enumerate(self.selected_tasks):
-                if self.is_cancelled:
-                    break
+                def cb(cur, tot, desc):
+                    overall_pct = int(((idx + (cur / max(tot, 1))) / total_tasks) * 100)
+                    self.progress_signal.emit(overall_pct, 100, f"Task [{task_id}] {task_name}: {desc}")
 
-                t_id = task["id"]
-                t_name = task["name"]
-
-                self.progress_signal.emit(
-                    int((idx / total) * 100), 100,
-                    f"Processing task {idx+1}/{total}: [{t_id}] {t_name}..."
+                out_dir = self.client.download_and_extract_task(
+                    task_id=task_id,
+                    task_name=task_name,
+                    dest_folder=self.dest_folder,
+                    progress_callback=cb
                 )
+                results.append({"task": task, "dir": str(out_dir)})
 
-                def sub_progress(cur, tot, msg):
-                    task_pct = (cur / tot) if tot > 0 else 0
-                    overall = int(((idx + task_pct) / total) * 100)
-                    self.progress_signal.emit(overall, 100, f"[{idx+1}/{total}] {msg}")
-
-                out_folder = self.client.download_and_extract_task(
-                    task_id=t_id,
-                    output_dir=self.dest_dir,
-                    progress_callback=sub_progress,
-                    task_name=t_name,
-                )
-                completed_folders.append(out_folder)
-                self.task_completed_signal.emit(t_id, t_name, str(out_folder))
-
-            self.progress_signal.emit(100, 100, f"Successfully downloaded and cleaned {len(completed_folders)} tasks!")
-            self.all_completed_signal.emit(completed_folders)
+            self.progress_signal.emit(100, 100, "All selected tasks downloaded and extracted!")
+            self.finished_signal.emit(results)
         except Exception as e:
             self.error_signal.emit(str(e))
 
@@ -142,20 +102,19 @@ class MergeWorker(QThread):
     finished_signal = pyqtSignal(dict)
     error_signal = pyqtSignal(str)
 
-    def __init__(self, source_dirs: list[Path], output_dir: Path):
+    def __init__(self, merger: CocoDatasetMerger, src_dir: Path, out_dir: Path):
         super().__init__()
-        self.source_dirs = source_dirs
-        self.output_dir = output_dir
+        self.merger = merger
+        self.src_dir = src_dir
+        self.out_dir = out_dir
 
     def run(self):
         try:
-            merger = CocoDatasetMerger()
-            res = merger.merge_datasets(
-                source_dirs_or_base=self.source_dirs,
-                output_dir=self.output_dir,
-                progress_callback=lambda c, t, m: self.progress_signal.emit(c, t, m),
-            )
-            self.finished_signal.emit(res)
+            def cb(cur, tot, desc):
+                self.progress_signal.emit(cur, tot, desc)
+
+            stats = self.merger.merge_datasets(self.src_dir, self.out_dir, progress_callback=cb)
+            self.finished_signal.emit(stats)
         except Exception as e:
             self.error_signal.emit(str(e))
 
@@ -165,22 +124,22 @@ class ConvertWorker(QThread):
     finished_signal = pyqtSignal(dict)
     error_signal = pyqtSignal(str)
 
-    def __init__(self, coco_json: Path, output_dir: Path, mode: str):
+    def __init__(self, converter: CocoToYoloConverter, coco_json: Path, out_labels: Path, mode: str):
         super().__init__()
+        self.converter = converter
         self.coco_json = coco_json
-        self.output_dir = output_dir
+        self.out_labels = out_labels
         self.mode = mode
 
     def run(self):
         try:
-            converter = CocoToYoloConverter()
-            res = converter.convert(
-                coco_json_path=self.coco_json,
-                output_labels_dir=self.output_dir,
-                mode=self.mode,
-                progress_callback=lambda c, t, m: self.progress_signal.emit(c, t, m),
+            def cb(cur, tot, desc):
+                self.progress_signal.emit(cur, tot, desc)
+
+            stats = self.converter.convert(
+                self.coco_json, self.out_labels, mode=self.mode, progress_callback=cb
             )
-            self.finished_signal.emit(res)
+            self.finished_signal.emit(stats)
         except Exception as e:
             self.error_signal.emit(str(e))
 
@@ -190,31 +149,42 @@ class SplitWorker(QThread):
     finished_signal = pyqtSignal(dict)
     error_signal = pyqtSignal(str)
 
-    def __init__(self, images_dir: Path, labels_dir: Path, out_dir: Path, coco_json: Path,
-                 train_r: float, val_r: float, test_r: float, seed: int = 42):
+    def __init__(
+        self,
+        splitter: DatasetSplitter,
+        img_dir: Path,
+        lbl_dir: Path,
+        out_dir: Path,
+        r_train: float,
+        r_val: float,
+        r_test: float,
+        coco_json: Path = None
+    ):
         super().__init__()
-        self.images_dir = images_dir
-        self.labels_dir = labels_dir
+        self.splitter = splitter
+        self.img_dir = img_dir
+        self.lbl_dir = lbl_dir
         self.out_dir = out_dir
+        self.r_train = r_train
+        self.r_val = r_val
+        self.r_test = r_test
         self.coco_json = coco_json
-        self.train_r = train_r
-        self.val_r = val_r
-        self.test_r = test_r
-        self.seed = seed
 
     def run(self):
         try:
-            splitter = DatasetSplitter()
-            res = splitter.split_dataset(
-                images_dir=self.images_dir,
-                labels_dir=self.labels_dir,
+            def cb(cur, tot, desc):
+                self.progress_signal.emit(cur, tot, desc)
+
+            res = self.splitter.split_dataset(
+                images_dir=self.img_dir,
+                labels_dir=self.lbl_dir,
                 output_dataset_dir=self.out_dir,
                 coco_json_path=self.coco_json,
-                train_ratio=self.train_r,
-                val_ratio=self.val_r,
-                test_ratio=self.test_r,
-                seed=self.seed,
-                progress_callback=lambda c, t, m: self.progress_signal.emit(c, t, m),
+                train_ratio=self.r_train,
+                val_ratio=self.r_val,
+                test_ratio=self.r_test,
+                copy_files=True,
+                progress_callback=cb
             )
             self.finished_signal.emit(res)
         except Exception as e:
@@ -227,8 +197,7 @@ class TrainWorker(QThread):
     finished_signal = pyqtSignal(dict)
     error_signal = pyqtSignal(str)
 
-    def __init__(self, engine: YoloTrainerEngine, task: str, model_name: str,
-                 data_yaml: Path, run_name: str, base_dir: Path, hyperparams: dict):
+    def __init__(self, engine: YoloTrainerEngine, task: str, model_name: str, data_yaml: Path, run_name: str, base_dir: Path, hyperparams: dict):
         super().__init__()
         self.engine = engine
         self.task = task
@@ -240,15 +209,21 @@ class TrainWorker(QThread):
 
     def run(self):
         try:
-            res = self.engine.train_model(
+            def log_cb(msg):
+                self.log_signal.emit(msg)
+
+            def epoch_cb(ep, tot, metrics):
+                self.epoch_signal.emit(ep, tot, metrics)
+
+            res = self.engine.train(
                 task=self.task,
-                model_name_or_path=self.model_name,
-                data_yaml_path=self.data_yaml,
-                custom_run_name=self.run_name,
-                base_runs_dir=self.base_dir,
+                model_name=self.model_name,
+                data_yaml=self.data_yaml,
+                run_name=self.run_name,
+                base_dir=self.base_dir,
                 hyperparams=self.hyperparams,
-                log_callback=lambda m: self.log_signal.emit(m),
-                epoch_callback=lambda e, t, d: self.epoch_signal.emit(e, t, d),
+                log_callback=log_cb,
+                epoch_callback=epoch_cb
             )
             self.finished_signal.emit(res)
         except Exception as e:
@@ -256,59 +231,58 @@ class TrainWorker(QThread):
 
 
 # =====================================================================
-# Main Application Window
+# Main GUI Window (100% Standalone Tools Architecture)
 # =====================================================================
 
 class MainWindow(QMainWindow):
     STEP_DESCRIPTIONS = [
-        ("Step 1: Task Explorer", "สำรวจและดาวน์โหลด Tasks (COCO 1.0 + Clean /images/default)"),
-        ("Step 2: Merge & Convert", "รวม Datasets เข้าด้วยกัน & แปลง COCO เป็น YOLO (Det/Seg)"),
-        ("Step 3: Split Dataset", "แบ่ง Train/Val/Test โดยนำทุกรูปภาพเข้าร่วม (รวม Backgrounds)"),
-        ("Step 4: YOLO Training", "ปรับ Auto-Tune Hyperparameters & เริ่ม Train พร้อม Early Stopping"),
-        ("Step 5: Runs & Explorer", "สำรวจผลลัพธ์การเทรน ตรวจสอบ weights และ data.yaml"),
+        ("CVAT Downloader", "เชื่อมต่อและดาวน์โหลด Tasks จาก CVAT (COCO 1.0 + Clean /images/default)"),
+        ("Merge Datasets", "รวม Datasets หลายๆ Task เข้าด้วยกัน และแก้ชื่อภาพซ้ำด้วย MD5"),
+        ("COCO to YOLO", "แปลง Annotation COCO 1.0 เป็น YOLO Detection (.txt) หรือ Segmentation"),
+        ("Dataset Splitter", "แบ่ง Train/Val/Test โดยนำทุกรูปภาพเข้าร่วม 100% (รวม Backgrounds)"),
+        ("YOLO Auto-Trainer", "Auto-Tune โมเดล, Train พร้อม Early Stopping และจัดการ Weights"),
     ]
 
     STEP_GUIDES = [
-        ".☘︎ ݁˖ ขั้นตอนที่ 1: เลือก Tasks ที่ต้องการดาวน์โหลด หรือฟิลเตอร์ตาม stage/state แล้วกด 'Download & Auto-Extract Tasks' ระบบจะแตกไฟล์และย้ายรูปออกจาก /images/default ให้เองครับ",
-        ".☘︎ ݁˖ ขั้นตอนที่ 2: กด '🧩 Merge Datasets' เพื่อรวมข้อมูลและแก้ชื่อภาพซ้ำ จากนั้นเลือกว่าจะแปลงเป็น Detection (Bounding Box) หรือ Segmentation (Polygon) แล้วกด Convert",
-        ".☘︎ ݁˖ ขั้นตอนที่ 3: ปรับสัดส่วนเปอร์เซ็นต์ Train / Val / Test ตามต้องการ (รูปภาพทุกรูปจะถูกนำมารวม 100% แม้ไม่มี Label ก็ตาม) แล้วกด Split",
-        ".☘︎ ݁˖ ขั้นตอนที่ 4: กดปุ่ม '⚡ Auto-Tune Hyperparameters' เพื่อตั้งค่าโมเดลให้เหมาะกับจำนวนภาพ ตั้งชื่อโฟลเดอร์รัน แล้วกด Start YOLO Training ได้เลย!",
-        ".☘︎ ݁˖ ขั้นตอนที่ 5: ตรวจสอบโฟลเดอร์ผลลัพธ์ โมเดล Weights (.pt) ที่ตั้งชื่อตามที่คุณกำหนด และกราฟผลการเทรนอย่างละเอียด",
+        ".☘︎ ݁˖ เครื่องมือที่ 1 (CVAT Downloader): กรอก URL, Username, Password แล้วคลิก 'Connect & Fetch' เพื่อดึงรายการ Tasks จากนั้นเลือก Tasks แล้วกดดาวน์โหลด ระบบจะแตกไฟล์และย้ายรูปออกจาก /images/default ให้เองครับ",
+        ".☘︎ ݁˖ เครื่องมือที่ 2 (Merge Datasets): เลือกโฟลเดอร์ต้นทางที่มีหลายๆ Task แล้วกด Merge ระบบจะรวมไฟล์ภาพและ Annotations เข้าเป็น Dataset เดียวกันในโฟลเดอร์ data/ พร้อมแก้ชื่อไฟล์ซ้ำด้วย MD5",
+        ".☘︎ ݁˖ เครื่องมือที่ 3 (COCO to YOLO): เลือกไฟล์ COCO JSON และโหมด Detection (แปลง Polygon เป็น Bounding Box) หรือ Segmentation จากนั้นกด Convert เพื่อสร้างไฟล์ Label .txt",
+        ".☘︎ ݁˖ เครื่องมือที่ 4 (Dataset Splitter): กำหนดสัดส่วน Train / Val / Test (รูปภาพทั้งหมด 100% จะถูกนำมาใช้งาน รวมถึงภาพ Background ที่ไม่มี Label) จากนั้นกด Split เพื่อสร้าง data.yaml",
+        ".☘︎ ݁˖ เครื่องมือที่ 5 (YOLO Auto-Trainer): กดปุ่ม '⚡ Auto-Tune Hyperparameters' เพื่อตั้งค่าโมเดลให้เข้ากับข้อมูล ตั้งชื่อโฟลเดอร์รัน แล้วเริ่ม Train โมเดล YOLO ได้ทันที",
     ]
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle(".☘︎ ݁˖ CVAT to YOLO Studio • Cozy AI Pipeline")
+        self.setWindowTitle(".☘︎ ݁˖ CVAT to YOLO Studio • Standalone AI Pipeline")
         self.resize(1260, 860)
         self.setMinimumSize(940, 620)
 
-        # Working Directories
+        # Single Unified Data Folder Architecture
         self.app_dir = Path("C:/Articulus/cvat").resolve()
-        self.downloads_dir = self.app_dir / "downloads"
-        self.merged_dir = self.app_dir / "merged"
-        self.dataset_dir = self.app_dir / "dataset"
+        self.data_dir = self.app_dir / "data"
         self.runs_dir = self.app_dir / "runs"
+        self.weights_dir = self.app_dir / "weights"
 
-        for d in [self.downloads_dir, self.merged_dir, self.dataset_dir, self.runs_dir]:
+        for d in [self.data_dir, self.runs_dir, self.weights_dir]:
             d.mkdir(parents=True, exist_ok=True)
 
         # State Engines
         self.cvat_client = CvatClientWrapper()
+        self.merger_engine = CocoDatasetMerger()
+        self.converter_engine = CocoToYoloConverter()
+        self.splitter_engine = DatasetSplitter()
         self.trainer_engine = YoloTrainerEngine()
+
         self.all_tasks_data: list[dict] = []
         self.step_completed = [False, False, False, False, False]
-
-        # Active Workers
         self.active_worker = None
 
         self._init_ui()
         self.setStyleSheet(DARK_STYLESHEET)
-
-        # Start on dedicated Login Page
-        self.root_stack.setCurrentIndex(0)
+        self._go_to_step(0)
 
     def _wrap_page_scroll(self, widget: QWidget) -> QScrollArea:
-        """Wraps any page inside a responsive QScrollArea so text never gets clipped vertically."""
+        """Wraps any standalone page inside a responsive QScrollArea so content never clips."""
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
@@ -323,171 +297,32 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central_widget)
 
         root_layout = QVBoxLayout(central_widget)
-        root_layout.setContentsMargins(0, 0, 0, 0)
-        root_layout.setSpacing(0)
+        root_layout.setContentsMargins(16, 12, 16, 12)
+        root_layout.setSpacing(10)
 
-        # Root Stack: 0 -> Dedicated Login Page, 1 -> Studio Wizard Workflow
-        self.root_stack = QStackedWidget()
-        self.view_login = self._build_login_view()
-        self.view_studio = self._build_studio_view()
+        # 1. Header with Animated Mascot, Hardware info & Quick Folder Action
+        root_layout.addWidget(self._build_studio_header())
 
-        self.root_stack.addWidget(self._wrap_page_scroll(self.view_login))
-        self.root_stack.addWidget(self.view_studio)
-
-        root_layout.addWidget(self.root_stack)
-
-    # =================================================================
-    # VIEW 0: DEDICATED LOGIN PAGE
-    # =================================================================
-
-    def _build_login_view(self) -> QWidget:
-        view = QWidget()
-        layout = QVBoxLayout(view)
-        layout.setContentsMargins(20, 20, 20, 20)
-
-        # Centering layout with vertical stretches
-        layout.addStretch(1)
-
-        center_row = QHBoxLayout()
-        center_row.addStretch(1)
-
-        # Glowing Login Card
-        card = QFrame()
-        card.setProperty("class", "LoginCard")
-        card.setFixedWidth(500)
-        card_layout = QVBoxLayout(card)
-        card_layout.setContentsMargins(32, 28, 32, 28)
-        card_layout.setSpacing(14)
-
-        # Dancing Mascot at top of Login Card
-        mascot_box = QHBoxLayout()
-        self.login_mascot = DancingSvgMascot(size=120)
-        mascot_box.addStretch()
-        mascot_box.addWidget(self.login_mascot)
-        mascot_box.addStretch()
-        card_layout.addLayout(mascot_box)
-
-        # Title & Subtitle
-        lbl_title = QLabel(".☘︎ ݁˖ CVAT Portal Sign-In")
-        lbl_title.setObjectName("loginTitle")
-        lbl_title.setAlignment(Qt.AlignCenter)
-        card_layout.addWidget(lbl_title)
-
-        lbl_sub = QLabel("Cozy AI Studio • Enter credentials to access datasets, images & annotations.")
-        lbl_sub.setObjectName("loginSubtitle")
-        lbl_sub.setAlignment(Qt.AlignCenter)
-        lbl_sub.setWordWrap(True)
-        card_layout.addWidget(lbl_sub)
-
-        card_layout.addSpacing(6)
-
-        # Error / Alert Banner (Hidden by default)
-        self.lbl_login_alert = QLabel()
-        self.lbl_login_alert.setProperty("class", "AlertError")
-        self.lbl_login_alert.setWordWrap(True)
-        self.lbl_login_alert.hide()
-        card_layout.addWidget(self.lbl_login_alert)
-
-        # Form Inputs
-        lbl_url = QLabel("CVAT Server URL:")
-        lbl_url.setStyleSheet("font-weight: 700; color: #1e293b;")
-        card_layout.addWidget(lbl_url)
-        self.txt_login_url = QLineEdit("http://1.10.131.222:8080/projects")
-        self.txt_login_url.setProperty("class", "LoginInput")
-        card_layout.addWidget(self.txt_login_url)
-
-        lbl_user = QLabel("Username:")
-        lbl_user.setStyleSheet("font-weight: 700; color: #1e293b;")
-        card_layout.addWidget(lbl_user)
-        self.txt_login_user = QLineEdit()
-        self.txt_login_user.setPlaceholderText("Enter your CVAT username")
-        self.txt_login_user.setProperty("class", "LoginInput")
-        card_layout.addWidget(self.txt_login_user)
-
-        lbl_pass = QLabel("Password:")
-        lbl_pass.setStyleSheet("font-weight: 700; color: #1e293b;")
-        card_layout.addWidget(lbl_pass)
-        self.txt_login_pass = QLineEdit()
-        self.txt_login_pass.setEchoMode(QLineEdit.Password)
-        self.txt_login_pass.setPlaceholderText("Enter your password")
-        self.txt_login_pass.setProperty("class", "LoginInput")
-        self.txt_login_pass.returnPressed.connect(self._on_do_login)
-        card_layout.addWidget(self.txt_login_pass)
-
-        # Status Label
-        self.lbl_login_status = QLabel("")
-        self.lbl_login_status.setAlignment(Qt.AlignCenter)
-        self.lbl_login_status.setStyleSheet("color: #166534; font-weight: 700;")
-        card_layout.addWidget(self.lbl_login_status)
-
-        # Login Action Button
-        self.btn_do_login = QPushButton("Sign In & Launch Studio")
-        self.btn_do_login.setProperty("class", "LoginButton")
-        self.btn_do_login.setIcon(get_svg_icon("key", 20))
-        self.btn_do_login.setIconSize(QSize(20, 20))
-        self.btn_do_login.setCursor(Qt.PointingHandCursor)
-        self.btn_do_login.clicked.connect(self._on_do_login)
-        card_layout.addWidget(self.btn_do_login)
-
-        # Offline / Local Dataset Skip Button
-        card_layout.addSpacing(4)
-        btn_skip = QPushButton("Work with Local Datasets (Skip Login / Offline Mode)")
-        btn_skip.setProperty("class", "SkipLoginButton")
-        btn_skip.setIcon(get_svg_icon("folder", 18))
-        btn_skip.setIconSize(QSize(18, 18))
-        btn_skip.setCursor(Qt.PointingHandCursor)
-        btn_skip.clicked.connect(self._on_skip_login)
-        card_layout.addWidget(btn_skip, alignment=Qt.AlignCenter)
-
-        center_row.addWidget(card)
-        center_row.addStretch(1)
-
-        layout.addLayout(center_row)
-        layout.addStretch(1)
-
-        # Version stamp
-        lbl_foot = QLabel("CVAT to YOLO Studio v2.0 • Enterprise Edition")
-        lbl_foot.setStyleSheet("color: #8c7b6f; font-size: 11px;")
-        lbl_foot.setAlignment(Qt.AlignCenter)
-        layout.addWidget(lbl_foot)
-
-        return view
-
-    # =================================================================
-    # VIEW 1: MAIN STUDIO WIZARD WORKFLOW (5 PAGES)
-    # =================================================================
-
-    def _build_studio_view(self) -> QWidget:
-        view = QWidget()
-        layout = QVBoxLayout(view)
-        layout.setContentsMargins(16, 12, 16, 12)
-        layout.setSpacing(10)
-
-        # 1. Header with Animated Mascot & User Profile Info
-        layout.addWidget(self._build_studio_header())
-
-        # 2. Interactive Stepper Bar (Step 1 -> 5)
-        layout.addWidget(self._build_stepper_bar())
+        # 2. Standalone Page Navigation Bar (5 Tools)
+        root_layout.addWidget(self._build_stepper_bar())
 
         # 3. Dynamic Guide Box
-        layout.addWidget(self._build_guide_box())
+        root_layout.addWidget(self._build_guide_box())
 
         # 4. Multi-Page Container (QStackedWidget with Responsive QScrollArea)
         self.pages = QStackedWidget()
         self.pages.addWidget(self._wrap_page_scroll(self._build_page_cvat()))
-        self.pages.addWidget(self._wrap_page_scroll(self._build_page_merge_convert()))
+        self.pages.addWidget(self._wrap_page_scroll(self._build_page_merge()))
+        self.pages.addWidget(self._wrap_page_scroll(self._build_page_convert()))
         self.pages.addWidget(self._wrap_page_scroll(self._build_page_split()))
         self.pages.addWidget(self._wrap_page_scroll(self._build_page_train()))
-        self.pages.addWidget(self._wrap_page_scroll(self._build_page_explorer()))
-        layout.addWidget(self.pages, stretch=1)
+        root_layout.addWidget(self.pages, stretch=1)
 
-        # 5. Bottom Stepper Footer Navigation (< Previous | Step X of 5 | Next >)
-        layout.addWidget(self._build_stepper_footer())
+        # 5. Bottom Stepper Footer Navigation (< Previous Tool | Tool X of 5 | Next Tool >)
+        root_layout.addWidget(self._build_stepper_footer())
 
         # 6. Global Status Bar
-        layout.addWidget(self._build_global_status_bar())
-
-        return view
+        root_layout.addWidget(self._build_global_status_bar())
 
     # -----------------------------------------------------------------
     # Studio Header
@@ -502,41 +337,38 @@ class MainWindow(QMainWindow):
         text_layout.setSpacing(3)
 
         title_row = QHBoxLayout()
-        title_lbl = QLabel(".☘︎ ݁˖ CVAT to YOLO Studio")
+        title_lbl = QLabel(".☘︎ ݁˖ CVAT to YOLO Studio • Standalone AI Pipeline")
         title_lbl.setObjectName("titleLabel")
         title_row.addWidget(title_lbl)
 
-        # Pulsing Activity Indicator
         self.wave_indicator = AnimatedWavePill(42, 22)
         title_row.addWidget(self.wave_indicator)
         title_row.addStretch()
-
         text_layout.addLayout(title_row)
 
         subtitle_lbl = QLabel(
-            "Cozy AI Pipeline: CVAT Downloader ➔ Auto-Cleanup ➔ COCO Merger ➔ "
-            "Polygon-to-YOLO (Det/Seg) ➔ Full Dataset Split ➔ YOLO Auto-Trainer"
+            "All-in-One Standalone Pipeline: CVAT Downloader ➔ Dataset Merger ➔ "
+            "COCO-to-YOLO (Det/Seg) ➔ Full Dataset Split ➔ YOLO Auto-Trainer"
         )
         subtitle_lbl.setObjectName("subtitleLabel")
         text_layout.addWidget(subtitle_lbl)
 
-        # Profile & Status Row
         profile_row = QHBoxLayout()
-        self.lbl_user_icon = QLabel()
-        self.lbl_user_icon.setPixmap(get_svg_pixmap("user", 18, 18))
-        profile_row.addWidget(self.lbl_user_icon)
+        self.lbl_server_icon = QLabel()
+        self.lbl_server_icon.setPixmap(get_svg_pixmap("server", 18, 18))
+        profile_row.addWidget(self.lbl_server_icon)
 
-        self.lbl_user_badge = QLabel("Connected: Anonymous")
-        self.lbl_user_badge.setStyleSheet("color: #166534; font-weight: 700; font-size: 12px; min-height: 20px;")
-        profile_row.addWidget(self.lbl_user_badge)
+        self.lbl_server_info = QLabel("CVAT Server: Not Connected")
+        self.lbl_server_info.setStyleSheet("color: #64748b; font-weight: 700; font-size: 12px; min-height: 20px;")
+        profile_row.addWidget(self.lbl_server_info)
 
-        btn_logout = QPushButton("Logout")
-        btn_logout.setProperty("class", "LogoutButton")
-        btn_logout.setIcon(get_svg_icon("logout", 15))
-        btn_logout.setIconSize(QSize(15, 15))
-        btn_logout.setCursor(Qt.PointingHandCursor)
-        btn_logout.clicked.connect(self._on_logout)
-        profile_row.addWidget(btn_logout)
+        btn_open_data = QPushButton("Open data/ Folder")
+        btn_open_data.setProperty("class", "LogoutButton")
+        btn_open_data.setIcon(get_svg_icon("folder", 15))
+        btn_open_data.setIconSize(QSize(15, 15))
+        btn_open_data.setCursor(Qt.PointingHandCursor)
+        btn_open_data.clicked.connect(lambda: self._open_dir(self.data_dir))
+        profile_row.addWidget(btn_open_data)
 
         profile_row.addSpacing(14)
 
@@ -552,10 +384,9 @@ class MainWindow(QMainWindow):
         profile_row.addStretch()
 
         text_layout.addLayout(profile_row)
-
         layout.addLayout(text_layout, stretch=1)
 
-        # Studio Mascot Container
+        # Mascot Box
         mascot_box = QVBoxLayout()
         mascot_box.setAlignment(Qt.AlignCenter)
 
@@ -571,7 +402,7 @@ class MainWindow(QMainWindow):
         return card
 
     # -----------------------------------------------------------------
-    # Stepper Navigation Bar
+    # Stepper Navigation Bar (5 Standalone Tool Buttons)
     # -----------------------------------------------------------------
     def _build_stepper_bar(self) -> QFrame:
         bar = QFrame()
@@ -582,11 +413,11 @@ class MainWindow(QMainWindow):
 
         self.step_buttons: list[QPushButton] = []
         step_config = [
-            ("step_cvat", "1. Task Explorer", "Fetch & Flatten Images"),
-            ("step_merge", "2. Merge & Convert", "COCO 1.0 to YOLO"),
-            ("step_split", "3. Dataset Splitter", "Train/Val/Test All Imgs"),
-            ("brain", "4. YOLO Auto-Trainer", "Auto-Tune & Train Model"),
-            ("lotus", "5. Runs & Explorer", "Explore Weights & Logs"),
+            ("step_cvat", "1. CVAT Downloader", "Connect & Download Tasks"),
+            ("step_merge", "2. Merge Datasets", "Deduplicate & Unify COCO"),
+            ("step_convert", "3. COCO to YOLO", "Det (BBox) / Seg (Poly)"),
+            ("step_split", "4. Dataset Splitter", "Train/Val/Test (All Imgs)"),
+            ("step_train", "5. YOLO Auto-Trainer", "Train, Auto-Tune & Explorer"),
         ]
 
         for idx, (icon_name, title, sub) in enumerate(step_config):
@@ -615,11 +446,10 @@ class MainWindow(QMainWindow):
         self.lbl_guide.setObjectName("guideLabel")
         self.lbl_guide.setWordWrap(True)
         layout.addWidget(self.lbl_guide, stretch=1)
-
         return box
 
     # -----------------------------------------------------------------
-    # Page 1: CVAT Task Explorer & Download
+    # Page 1: CVAT Downloader (Standalone)
     # -----------------------------------------------------------------
     def _build_page_cvat(self) -> QWidget:
         page = QWidget()
@@ -627,29 +457,49 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(10)
 
-        # Connection Info & Quick Refresh Bar
-        conn_card = QFrame()
-        conn_card.setProperty("class", "CardFrame")
-        conn_layout = QHBoxLayout(conn_card)
-        conn_layout.setContentsMargins(14, 8, 14, 8)
+        # 1. Connection Card (NO DEFAULT URL!)
+        conn_box = QGroupBox("CVAT Server Authentication & Connection")
+        conn_layout = QGridLayout(conn_box)
+        conn_layout.setHorizontalSpacing(10)
+        conn_layout.setVerticalSpacing(8)
 
-        lbl_srv_icon = QLabel()
-        lbl_srv_icon.setPixmap(get_svg_pixmap("server", 18, 18))
-        conn_layout.addWidget(lbl_srv_icon)
+        conn_layout.addWidget(QLabel("CVAT Server URL:"), 0, 0)
+        self.txt_login_url = QLineEdit("")
+        self.txt_login_url.setPlaceholderText("http://<your-cvat-server>:8080")
+        conn_layout.addWidget(self.txt_login_url, 0, 1)
 
-        self.lbl_server_info = QLabel("Connected Server: http://1.10.131.222:8080")
-        self.lbl_server_info.setStyleSheet("color: #166534; font-weight: 700; min-height: 22px;")
-        conn_layout.addWidget(self.lbl_server_info, stretch=1)
+        conn_layout.addWidget(QLabel("Username:"), 0, 2)
+        self.txt_login_user = QLineEdit("")
+        self.txt_login_user.setPlaceholderText("CVAT username")
+        conn_layout.addWidget(self.txt_login_user, 0, 3)
 
-        btn_refresh_tasks = QPushButton("Refresh Tasks from Server")
+        conn_layout.addWidget(QLabel("Password:"), 0, 4)
+        self.txt_login_pass = QLineEdit("")
+        self.txt_login_pass.setEchoMode(QLineEdit.Password)
+        self.txt_login_pass.setPlaceholderText("CVAT password")
+        self.txt_login_pass.returnPressed.connect(self._on_do_login)
+        conn_layout.addWidget(self.txt_login_pass, 0, 5)
+
+        self.btn_do_login = QPushButton("Connect & Fetch")
+        self.btn_do_login.setProperty("class", "PrimaryButton")
+        self.btn_do_login.setIcon(get_svg_icon("key", 18))
+        self.btn_do_login.setIconSize(QSize(18, 18))
+        self.btn_do_login.clicked.connect(self._on_do_login)
+        conn_layout.addWidget(self.btn_do_login, 0, 6)
+
+        self.lbl_login_status = QLabel("Enter your CVAT Server URL and credentials above, then click 'Connect & Fetch'.")
+        self.lbl_login_status.setStyleSheet("color: #64748b; font-weight: 600; min-height: 22px;")
+        conn_layout.addWidget(self.lbl_login_status, 1, 0, 1, 6)
+
+        btn_refresh_tasks = QPushButton("Refresh Tasks")
         btn_refresh_tasks.setIcon(get_svg_icon("refresh", 16))
         btn_refresh_tasks.setIconSize(QSize(16, 16))
         btn_refresh_tasks.clicked.connect(self._fetch_cvat_tasks)
-        conn_layout.addWidget(btn_refresh_tasks)
+        conn_layout.addWidget(btn_refresh_tasks, 1, 6)
 
-        layout.addWidget(conn_card)
+        layout.addWidget(conn_box)
 
-        # Filter Card (Project, Stage, State, Search)
+        # 2. Filter Card (Project, Stage, State, Search)
         filter_card = QFrame()
         filter_card.setProperty("class", "CardFrame")
         filter_layout = QHBoxLayout(filter_card)
@@ -694,7 +544,7 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(filter_card)
 
-        # Tasks Table
+        # 3. Tasks Table
         self.tbl_tasks = QTableWidget()
         self.tbl_tasks.setColumnCount(8)
         self.tbl_tasks.setHorizontalHeaderLabels([
@@ -708,14 +558,14 @@ class MainWindow(QMainWindow):
         self.tbl_tasks.setSelectionBehavior(QTableWidget.SelectRows)
         layout.addWidget(self.tbl_tasks, stretch=1)
 
-        # Download Destination & Action Bar
+        # 4. Download Destination & Action Bar (Unified data/raw_tasks)
         dl_card = QFrame()
         dl_card.setProperty("class", "CardFrame")
         dl_layout = QHBoxLayout(dl_card)
         dl_layout.setContentsMargins(14, 10, 14, 10)
 
         dl_layout.addWidget(QLabel("Download Folder:"))
-        self.txt_dl_folder = QLineEdit(str(self.downloads_dir))
+        self.txt_dl_folder = QLineEdit(str(self.data_dir / "raw_tasks"))
         dl_layout.addWidget(self.txt_dl_folder, stretch=1)
 
         btn_browse_dl = QPushButton("Browse...")
@@ -743,7 +593,7 @@ class MainWindow(QMainWindow):
         self.lbl_cvat_status = QLabel("Select tasks above to download.")
         status_row.addWidget(self.lbl_cvat_status, stretch=1)
 
-        self.btn_next_step_1 = QPushButton("Proceed to Step 2: Merge & Convert")
+        self.btn_next_step_1 = QPushButton("Proceed to Step 2: Merge Datasets")
         self.btn_next_step_1.setProperty("class", "StepNavButton")
         self.btn_next_step_1.setIcon(get_svg_icon("arrow_right", 16))
         self.btn_next_step_1.setIconSize(QSize(16, 16))
@@ -754,22 +604,29 @@ class MainWindow(QMainWindow):
         return page
 
     # -----------------------------------------------------------------
-    # Page 2: Merge & Convert (COCO → YOLO)
+    # Page 2: Merge Datasets (Standalone)
     # -----------------------------------------------------------------
-    def _build_page_merge_convert(self) -> QWidget:
+    def _build_page_merge(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(12)
 
-        # Group 1: Merge Downloaded Tasks
-        merge_box = QGroupBox("Part A: Merge Multiple Downloaded CVAT Tasks into Single Dataset")
+        merge_box = QGroupBox("Standalone Tool: Merge Multiple Tasks into Unified COCO 1.0 Dataset")
         merge_layout = QVBoxLayout(merge_box)
-        merge_layout.setSpacing(10)
+        merge_layout.setSpacing(12)
+
+        desc = QLabel(
+            "Combines multiple downloaded CVAT tasks (images & instances_default.json) into a single dataset in the data/ folder. "
+            "Automatically resolves duplicate image filenames using MD5 hashes, re-indexes category IDs, and consolidates annotations."
+        )
+        desc.setWordWrap(True)
+        desc.setStyleSheet("color: #64748b; font-size: 12.5px; line-height: 1.4;")
+        merge_layout.addWidget(desc)
 
         row_src = QHBoxLayout()
         row_src.addWidget(QLabel("Tasks Source Directory:"))
-        self.txt_merge_src = QLineEdit(str(self.downloads_dir))
+        self.txt_merge_src = QLineEdit(str(self.data_dir / "raw_tasks"))
         row_src.addWidget(self.txt_merge_src, stretch=1)
         btn_src = QPushButton("Browse...")
         btn_src.setIcon(get_svg_icon("folder", 16))
@@ -780,7 +637,7 @@ class MainWindow(QMainWindow):
 
         row_dst = QHBoxLayout()
         row_dst.addWidget(QLabel("Merged Output Directory:"))
-        self.txt_merge_dst = QLineEdit(str(self.merged_dir))
+        self.txt_merge_dst = QLineEdit(str(self.data_dir))
         row_dst.addWidget(self.txt_merge_dst, stretch=1)
         btn_dst = QPushButton("Browse...")
         btn_dst.setIcon(get_svg_icon("folder", 16))
@@ -798,15 +655,61 @@ class MainWindow(QMainWindow):
         merge_action_row.addWidget(self.btn_run_merge)
         merge_layout.addLayout(merge_action_row)
 
+        self.prog_merge = QProgressBar()
+        self.prog_merge.setValue(0)
+        merge_layout.addWidget(self.prog_merge)
+
         self.lbl_merge_stats = QLabel("No merged dataset yet.")
+        self.lbl_merge_stats.setStyleSheet("color: #1e293b; font-weight: 600; min-height: 24px;")
         merge_layout.addWidget(self.lbl_merge_stats)
 
         layout.addWidget(merge_box)
 
-        # Group 2: Convert COCO 1.0 to YOLO Format
-        conv_box = QGroupBox("Part B: Convert Unified COCO 1.0 to YOLO Format (.txt)")
+        advance_row = QHBoxLayout()
+        advance_row.addStretch()
+        self.btn_next_step_2 = QPushButton("Proceed to Step 3: COCO to YOLO Converter")
+        self.btn_next_step_2.setProperty("class", "StepNavButton")
+        self.btn_next_step_2.setIcon(get_svg_icon("arrow_right", 16))
+        self.btn_next_step_2.setIconSize(QSize(16, 16))
+        self.btn_next_step_2.clicked.connect(lambda: self._go_to_step(2))
+        advance_row.addWidget(self.btn_next_step_2)
+        layout.addLayout(advance_row)
+
+        layout.addStretch()
+        return page
+
+    # -----------------------------------------------------------------
+    # Page 3: COCO to YOLO Converter (Standalone)
+    # -----------------------------------------------------------------
+    def _build_page_convert(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(12)
+
+        conv_box = QGroupBox("Standalone Tool: Convert COCO 1.0 Annotations to YOLO Format (.txt)")
         conv_layout = QVBoxLayout(conv_box)
-        conv_layout.setSpacing(10)
+        conv_layout.setSpacing(12)
+
+        desc = QLabel(
+            "Parses any COCO 1.0 JSON and converts all annotations into YOLO normalized format (.txt). "
+            "For Detection, segmentation polygons are automatically converted to normalized bounding boxes (xc, yc, w, h). "
+            "For Segmentation, exact polygon vertex coordinates are preserved."
+        )
+        desc.setWordWrap(True)
+        desc.setStyleSheet("color: #64748b; font-size: 12.5px; line-height: 1.4;")
+        conv_layout.addWidget(desc)
+
+        row_json = QHBoxLayout()
+        row_json.addWidget(QLabel("COCO JSON File:"))
+        self.txt_conv_json = QLineEdit(str(self.data_dir / "annotations" / "instances_default.json"))
+        row_json.addWidget(self.txt_conv_json, stretch=1)
+        btn_json = QPushButton("Browse...")
+        btn_json.setIcon(get_svg_icon("folder", 16))
+        btn_json.setIconSize(QSize(16, 16))
+        btn_json.clicked.connect(lambda: self._browse_file(self.txt_conv_json, "JSON Files (*.json)"))
+        row_json.addWidget(btn_json)
+        conv_layout.addLayout(row_json)
 
         mode_row = QHBoxLayout()
         mode_row.addWidget(QLabel("YOLO Task Mode:"))
@@ -822,7 +725,7 @@ class MainWindow(QMainWindow):
 
         row_lbl_dst = QHBoxLayout()
         row_lbl_dst.addWidget(QLabel("Labels Output Folder:"))
-        self.txt_conv_labels_dst = QLineEdit(str(self.merged_dir / "labels"))
+        self.txt_conv_labels_dst = QLineEdit(str(self.data_dir / "labels"))
         row_lbl_dst.addWidget(self.txt_conv_labels_dst, stretch=1)
         btn_lbl_dst = QPushButton("Browse...")
         btn_lbl_dst.setIcon(get_svg_icon("folder", 16))
@@ -840,31 +743,31 @@ class MainWindow(QMainWindow):
         conv_action_row.addWidget(self.btn_run_convert)
         conv_layout.addLayout(conv_action_row)
 
+        self.prog_convert = QProgressBar()
+        self.prog_convert.setValue(0)
+        conv_layout.addWidget(self.prog_convert)
+
         self.lbl_conv_stats = QLabel("No conversion performed yet.")
+        self.lbl_conv_stats.setStyleSheet("color: #1e293b; font-weight: 600; min-height: 24px;")
         conv_layout.addWidget(self.lbl_conv_stats)
 
         layout.addWidget(conv_box)
 
-        # Progress bar for Page 2
-        self.prog_merge_conv = QProgressBar()
-        self.prog_merge_conv.setValue(0)
-        layout.addWidget(self.prog_merge_conv)
-
         advance_row = QHBoxLayout()
         advance_row.addStretch()
-        self.btn_next_step_2 = QPushButton("Proceed to Step 3: Dataset Splitter")
-        self.btn_next_step_2.setProperty("class", "StepNavButton")
-        self.btn_next_step_2.setIcon(get_svg_icon("arrow_right", 16))
-        self.btn_next_step_2.setIconSize(QSize(16, 16))
-        self.btn_next_step_2.clicked.connect(lambda: self._go_to_step(2))
-        advance_row.addWidget(self.btn_next_step_2)
+        self.btn_next_step_3 = QPushButton("Proceed to Step 4: Dataset Splitter")
+        self.btn_next_step_3.setProperty("class", "StepNavButton")
+        self.btn_next_step_3.setIcon(get_svg_icon("arrow_right", 16))
+        self.btn_next_step_3.setIconSize(QSize(16, 16))
+        self.btn_next_step_3.clicked.connect(lambda: self._go_to_step(3))
+        advance_row.addWidget(self.btn_next_step_3)
         layout.addLayout(advance_row)
 
         layout.addStretch()
         return page
 
     # -----------------------------------------------------------------
-    # Page 3: Dataset Splitter
+    # Page 4: Dataset Splitter (Standalone)
     # -----------------------------------------------------------------
     def _build_page_split(self) -> QWidget:
         page = QWidget()
@@ -872,13 +775,13 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(12)
 
-        box_paths = QGroupBox("Dataset Input Sources & Split Output Destination")
+        box_paths = QGroupBox("Standalone Tool: Dataset Input Sources & Destination (data/)")
         box_paths_layout = QGridLayout(box_paths)
         box_paths_layout.setHorizontalSpacing(10)
         box_paths_layout.setVerticalSpacing(8)
 
         box_paths_layout.addWidget(QLabel("Images Source Folder:"), 0, 0)
-        self.txt_split_img_src = QLineEdit(str(self.merged_dir / "images"))
+        self.txt_split_img_src = QLineEdit(str(self.data_dir / "images"))
         box_paths_layout.addWidget(self.txt_split_img_src, 0, 1)
         btn_img_src = QPushButton("Browse...")
         btn_img_src.setIcon(get_svg_icon("folder", 16))
@@ -887,7 +790,7 @@ class MainWindow(QMainWindow):
         box_paths_layout.addWidget(btn_img_src, 0, 2)
 
         box_paths_layout.addWidget(QLabel("Labels Source Folder:"), 1, 0)
-        self.txt_split_lbl_src = QLineEdit(str(self.merged_dir / "labels"))
+        self.txt_split_lbl_src = QLineEdit(str(self.data_dir / "labels"))
         box_paths_layout.addWidget(self.txt_split_lbl_src, 1, 1)
         btn_lbl_src = QPushButton("Browse...")
         btn_lbl_src.setIcon(get_svg_icon("folder", 16))
@@ -896,7 +799,7 @@ class MainWindow(QMainWindow):
         box_paths_layout.addWidget(btn_lbl_src, 1, 2)
 
         box_paths_layout.addWidget(QLabel("Split Dataset Destination:"), 2, 0)
-        self.txt_split_dst = QLineEdit(str(self.dataset_dir))
+        self.txt_split_dst = QLineEdit(str(self.data_dir))
         box_paths_layout.addWidget(self.txt_split_dst, 2, 1)
         btn_split_dst = QPushButton("Browse...")
         btn_split_dst.setIcon(get_svg_icon("folder", 16))
@@ -971,23 +874,24 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.prog_split)
 
         self.lbl_split_stats = QLabel("No dataset split yet.")
+        self.lbl_split_stats.setStyleSheet("color: #1e293b; font-weight: 600; min-height: 24px;")
         layout.addWidget(self.lbl_split_stats)
 
         advance_row = QHBoxLayout()
         advance_row.addStretch()
-        self.btn_next_step_3 = QPushButton("Proceed to Step 4: YOLO Training")
-        self.btn_next_step_3.setProperty("class", "StepNavButton")
-        self.btn_next_step_3.setIcon(get_svg_icon("arrow_right", 16))
-        self.btn_next_step_3.setIconSize(QSize(16, 16))
-        self.btn_next_step_3.clicked.connect(lambda: self._go_to_step(3))
-        advance_row.addWidget(self.btn_next_step_3)
+        self.btn_next_step_4 = QPushButton("Proceed to Step 5: YOLO Auto-Trainer")
+        self.btn_next_step_4.setProperty("class", "StepNavButton")
+        self.btn_next_step_4.setIcon(get_svg_icon("arrow_right", 16))
+        self.btn_next_step_4.setIconSize(QSize(16, 16))
+        self.btn_next_step_4.clicked.connect(lambda: self._go_to_step(4))
+        advance_row.addWidget(self.btn_next_step_4)
         layout.addLayout(advance_row)
 
         layout.addStretch()
         return page
 
     # -----------------------------------------------------------------
-    # Page 4: YOLO Auto-Trainer
+    # Page 5: YOLO Auto-Trainer & Explorer (Standalone)
     # -----------------------------------------------------------------
     def _build_page_train(self) -> QWidget:
         page = QWidget()
@@ -1021,7 +925,7 @@ class MainWindow(QMainWindow):
         m_layout.addWidget(btn_browse_pt, 0, 6)
 
         m_layout.addWidget(QLabel("data.yaml Path:"), 1, 0)
-        self.txt_data_yaml = QLineEdit(str(self.dataset_dir / "data.yaml"))
+        self.txt_data_yaml = QLineEdit(str(self.data_dir / "data.yaml"))
         m_layout.addWidget(self.txt_data_yaml, 1, 1, 1, 5)
         btn_browse_yaml = QPushButton("Browse...")
         btn_browse_yaml.setIcon(get_svg_icon("folder", 16))
@@ -1176,74 +1080,40 @@ class MainWindow(QMainWindow):
 
         self.txt_train_log = QPlainTextEdit()
         self.txt_train_log.setReadOnly(True)
-        self.txt_train_log.setMinimumHeight(160)
+        self.txt_train_log.setMinimumHeight(150)
         layout.addWidget(self.txt_train_log, stretch=1)
 
-        advance_row = QHBoxLayout()
-        advance_row.addStretch()
-        self.btn_next_step_4 = QPushButton("View Results in Step 5")
-        self.btn_next_step_4.setProperty("class", "StepNavButton")
-        self.btn_next_step_4.setIcon(get_svg_icon("arrow_right", 16))
-        self.btn_next_step_4.setIconSize(QSize(16, 16))
-        self.btn_next_step_4.clicked.connect(lambda: self._go_to_step(4))
-        advance_row.addWidget(self.btn_next_step_4)
-        layout.addLayout(advance_row)
+        # Workspace Explorer Box (Integrated in Tool 5)
+        box_quick = QGroupBox("Quick Open Workspaces & data.yaml Preview")
+        quick_layout = QVBoxLayout(box_quick)
 
-        return page
+        quick_btns = QHBoxLayout()
+        btn_open_data = QPushButton("Open data/ Folder")
+        btn_open_data.setIcon(get_svg_icon("folder", 16))
+        btn_open_data.setIconSize(QSize(16, 16))
+        btn_open_data.clicked.connect(lambda: self._open_dir(self.data_dir))
+        quick_btns.addWidget(btn_open_data)
 
-    # -----------------------------------------------------------------
-    # Page 5: Runs & Explorer
-    # -----------------------------------------------------------------
-    def _build_page_explorer(self) -> QWidget:
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(14, 14, 14, 14)
-        layout.setSpacing(12)
-
-        box_quick = QGroupBox("Quick Open Workspaces in Windows File Explorer")
-        quick_layout = QGridLayout(box_quick)
-        quick_layout.setHorizontalSpacing(12)
-        quick_layout.setVerticalSpacing(10)
-
-        btn_open_dl = QPushButton("Open Downloads Folder")
-        btn_open_dl.setIcon(get_svg_icon("folder", 18))
-        btn_open_dl.setIconSize(QSize(18, 18))
-        btn_open_dl.clicked.connect(lambda: self._open_dir(self.downloads_dir))
-        quick_layout.addWidget(btn_open_dl, 0, 0)
-
-        btn_open_mrg = QPushButton("Open Merged Folder")
-        btn_open_mrg.setIcon(get_svg_icon("step_merge", 18))
-        btn_open_mrg.setIconSize(QSize(18, 18))
-        btn_open_mrg.clicked.connect(lambda: self._open_dir(self.merged_dir))
-        quick_layout.addWidget(btn_open_mrg, 0, 1)
-
-        btn_open_ds = QPushButton("Open Split Dataset Folder")
-        btn_open_ds.setIcon(get_svg_icon("step_split", 18))
-        btn_open_ds.setIconSize(QSize(18, 18))
-        btn_open_ds.clicked.connect(lambda: self._open_dir(self.dataset_dir))
-        quick_layout.addWidget(btn_open_ds, 1, 0)
-
-        btn_open_runs = QPushButton("Open Runs / Weights Folder")
-        btn_open_runs.setIcon(get_svg_icon("lotus", 18))
-        btn_open_runs.setIconSize(QSize(18, 18))
+        btn_open_runs = QPushButton("Open runs/ Folder")
+        btn_open_runs.setIcon(get_svg_icon("lotus", 16))
+        btn_open_runs.setIconSize(QSize(16, 16))
         btn_open_runs.clicked.connect(lambda: self._open_dir(self.runs_dir))
-        quick_layout.addWidget(btn_open_runs, 1, 1)
-
-        layout.addWidget(box_quick)
-
-        box_yaml = QGroupBox("Active data.yaml Configuration Preview")
-        yaml_layout = QVBoxLayout(box_yaml)
-        self.txt_yaml_preview = QPlainTextEdit()
-        self.txt_yaml_preview.setReadOnly(True)
-        yaml_layout.addWidget(self.txt_yaml_preview)
+        quick_btns.addWidget(btn_open_runs)
 
         btn_refresh_yaml = QPushButton("Refresh data.yaml Preview")
         btn_refresh_yaml.setIcon(get_svg_icon("refresh", 16))
         btn_refresh_yaml.setIconSize(QSize(16, 16))
         btn_refresh_yaml.clicked.connect(self._refresh_yaml_preview)
-        yaml_layout.addWidget(btn_refresh_yaml)
+        quick_btns.addWidget(btn_refresh_yaml)
 
-        layout.addWidget(box_yaml, stretch=1)
+        quick_layout.addLayout(quick_btns)
+
+        self.txt_yaml_preview = QPlainTextEdit()
+        self.txt_yaml_preview.setReadOnly(True)
+        self.txt_yaml_preview.setMaximumHeight(120)
+        quick_layout.addWidget(self.txt_yaml_preview)
+
+        layout.addWidget(box_quick)
 
         return page
 
@@ -1256,7 +1126,7 @@ class MainWindow(QMainWindow):
         layout = QHBoxLayout(footer)
         layout.setContentsMargins(8, 4, 8, 4)
 
-        self.btn_prev_step = QPushButton("Previous Step")
+        self.btn_prev_step = QPushButton("Previous Tool")
         self.btn_prev_step.setProperty("class", "StepNavButton")
         self.btn_prev_step.setIcon(get_svg_icon("arrow_left", 18))
         self.btn_prev_step.setIconSize(QSize(18, 18))
@@ -1265,13 +1135,13 @@ class MainWindow(QMainWindow):
 
         layout.addStretch()
 
-        self.lbl_step_indicator = QLabel("Step 1 of 5: Task Explorer")
+        self.lbl_step_indicator = QLabel("Tool 1 of 5: CVAT Downloader")
         self.lbl_step_indicator.setStyleSheet("font-weight: 700; color: #166534; font-size: 13px; min-height: 22px;")
         layout.addWidget(self.lbl_step_indicator)
 
         layout.addStretch()
 
-        self.btn_next_step = QPushButton("Next Step")
+        self.btn_next_step = QPushButton("Next Tool")
         self.btn_next_step.setProperty("class", "StepNavButton")
         self.btn_next_step.setIcon(get_svg_icon("arrow_right", 18))
         self.btn_next_step.setIconSize(QSize(18, 18))
@@ -1297,97 +1167,32 @@ class MainWindow(QMainWindow):
         self.lbl_global_status.setStyleSheet("font-weight: 600; color: #166534;")
         layout.addWidget(self.lbl_global_status, stretch=1)
 
-        lbl_workspace = QLabel(f"Workspace: {self.app_dir}")
+        lbl_workspace = QLabel(f"Data Directory: {self.data_dir}")
         lbl_workspace.setStyleSheet("color: #64748b; font-size: 11px;")
         layout.addWidget(lbl_workspace)
 
         return bar
 
     # =================================================================
-    # Login & Authentication Slots
+    # Common Event Handlers & Slots
     # =================================================================
 
-    def _on_do_login(self):
-        url = self.txt_login_url.text().strip()
-        user = self.txt_login_user.text().strip()
-        pwd = self.txt_login_pass.text()
+    def _browse_folder(self, line_edit: QLineEdit):
+        folder = QFileDialog.getExistingDirectory(self, "Select Folder", line_edit.text())
+        if folder:
+            line_edit.setText(str(Path(folder).resolve()))
 
-        if not url:
-            self._show_login_alert("Please provide a valid CVAT URL.")
-            return
+    def _browse_file(self, line_edit: QLineEdit, filter_str: str = "All Files (*.*)"):
+        f, _ = QFileDialog.getOpenFileName(self, "Select File", line_edit.text(), filter_str)
+        if f:
+            line_edit.setText(str(Path(f).resolve()))
 
-        self.lbl_login_alert.hide()
-        self.btn_do_login.setEnabled(False)
-        self.lbl_login_status.setText("Connecting to CVAT server...")
-        self.login_mascot.set_state(DancingSvgMascot.STATE_DOWNLOADING)
-
-        self.active_worker = CvatAuthWorker(self.cvat_client, url, user, pwd)
-        self.active_worker.finished_signal.connect(self._on_auth_success)
-        self.active_worker.error_signal.connect(self._on_auth_error)
-        self.active_worker.start()
-
-    def _on_auth_success(self, login_info: dict, projects: list[dict], tasks: list[dict]):
-        self.btn_do_login.setEnabled(True)
-        self.login_mascot.set_state(DancingSvgMascot.STATE_SUCCESS)
-        self.lbl_login_status.setText("Authentication successful!")
-
-        # Update Studio Header
-        username = login_info.get("username") or "User"
-        server_url = login_info.get("server_url")
-        self.lbl_user_badge.setText(f"Logged in as: {username} | Host: {server_url}")
-        self.lbl_server_info.setText(f"Connected Server: {server_url} (v{login_info.get('server_version')})")
-
-        # Populate projects dropdown
-        self.cmb_proj_filter.blockSignals(True)
-        self.cmb_proj_filter.clear()
-        self.cmb_proj_filter.addItem("All Projects", None)
-        for p in projects:
-            self.cmb_proj_filter.addItem(f"[{p['id']}] {p['name']}", p['id'])
-        self.cmb_proj_filter.blockSignals(False)
-
-        self.all_tasks_data = tasks
-        self._populate_tasks_table(self.all_tasks_data)
-        self.lbl_cvat_status.setText(f"Loaded {len(tasks)} tasks across {len(projects)} projects.")
-
-        # Transition to Studio Wizard View
-        self.root_stack.setCurrentIndex(1)
-        self._go_to_step(0)
-
-    def _on_auth_error(self, err_msg: str):
-        self.btn_do_login.setEnabled(True)
-        self.login_mascot.set_state(DancingSvgMascot.STATE_IDLE)
-        self.lbl_login_status.setText("")
-        self._show_login_alert(f"Authentication Failed: {err_msg}")
-
-    def _show_login_alert(self, message: str):
-        self.lbl_login_alert.setText(f"{message}")
-        self.lbl_login_alert.show()
-
-    def _on_skip_login(self):
-        """Allows user to bypass CVAT login to work directly on local datasets/models."""
-        self.lbl_user_badge.setText("👤 Mode: Local Workspaces (Offline)")
-        self.lbl_server_info.setText("CVAT Status: Not connected (Local Offline Mode)")
-        self.root_stack.setCurrentIndex(1)
-        # Go directly to Step 2 (Merge & Convert) or Step 1
-        self._go_to_step(1)
-
-    def _on_logout(self):
-        ret = QMessageBox.question(
-            self, "Confirm Logout", "Are you sure you want to log out of CVAT and return to the Sign-In screen?",
-            QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes
-        )
-        if ret == QMessageBox.Yes:
-            self.cvat_client.logout()
-            self.all_tasks_data.clear()
-            self.tbl_tasks.setRowCount(0)
-            self.txt_login_pass.clear()
-            self.lbl_login_status.setText("")
-            self.lbl_login_alert.hide()
-            self.root_stack.setCurrentIndex(0)
-
-    # =================================================================
-    # Step Wizard Controller
-    # =================================================================
+    def _open_dir(self, dir_path: Path):
+        dir_path.mkdir(parents=True, exist_ok=True)
+        if sys.platform == "win32":
+            os.startfile(str(dir_path))
+        else:
+            subprocess.Popen(["xdg-open", str(dir_path)])
 
     def _go_to_step(self, step_idx: int):
         if step_idx < 0 or step_idx >= self.pages.count():
@@ -1409,7 +1214,7 @@ class MainWindow(QMainWindow):
         # Update Footer
         self.btn_prev_step.setEnabled(step_idx > 0)
         self.btn_next_step.setEnabled(step_idx < self.pages.count() - 1)
-        self.lbl_step_indicator.setText(f"Step {step_idx + 1} of {self.pages.count()}: {self.STEP_DESCRIPTIONS[step_idx][0]}")
+        self.lbl_step_indicator.setText(f"Tool {step_idx + 1} of {self.pages.count()}: {self.STEP_DESCRIPTIONS[step_idx][0]}")
 
         # Update Dynamic Guidance Box
         self.lbl_guide.setText(self.STEP_GUIDES[step_idx])
@@ -1428,54 +1233,36 @@ class MainWindow(QMainWindow):
         if cur < self.pages.count() - 1:
             self._go_to_step(cur + 1)
 
-    # =================================================================
-    # Common Utilities
-    # =================================================================
-
-    def _browse_folder(self, line_edit: QLineEdit):
-        folder = QFileDialog.getExistingDirectory(self, "Select Folder", line_edit.text() or str(self.app_dir))
-        if folder:
-            line_edit.setText(folder)
-
-    def _browse_model_pt(self):
-        file_path, _ = QFileDialog.getOpenFileName(self, "Select YOLO Weights (.pt)", str(self.app_dir), "PyTorch Weights (*.pt)")
-        if file_path:
-            self.txt_custom_model.setText(file_path)
-
-    def _browse_data_yaml(self):
-        file_path, _ = QFileDialog.getOpenFileName(self, "Select data.yaml", str(self.dataset_dir), "YAML Files (*.yaml *.yml)")
-        if file_path:
-            self.txt_data_yaml.setText(file_path)
-
-    def _open_dir(self, directory: Path):
-        try:
-            if sys.platform == "win32":
-                os.startfile(str(directory))
-            elif sys.platform == "darwin":
-                subprocess.Popen(["open", str(directory)])
-            else:
-                subprocess.Popen(["xdg-open", str(directory)])
-        except Exception as e:
-            QMessageBox.warning(self, "Error", f"Could not open directory: {e}")
-
     # -----------------------------------------------------------------
-    # Step 1: CVAT Slots
+    # CVAT Downloader Slots
     # -----------------------------------------------------------------
-    def _fetch_cvat_tasks(self):
-        if not self.cvat_client.is_logged_in():
-            QMessageBox.information(self, "Not Logged In", "Please sign in to CVAT first.")
-            self.root_stack.setCurrentIndex(0)
+    def _on_do_login(self):
+        url = self.txt_login_url.text().strip()
+        user = self.txt_login_user.text().strip()
+        pwd = self.txt_login_pass.text()
+
+        if not url:
+            QMessageBox.warning(self, "Input Required", "Please enter your CVAT Server URL (e.g. http://<server-ip>:8080).")
             return
 
-        self.lbl_cvat_status.setText("Fetching updated tasks from CVAT...")
-        self.active_worker = CvatFetchWorker(self.cvat_client)
-        self.active_worker.finished_signal.connect(self._on_tasks_fetched)
-        self.active_worker.error_signal.connect(self._on_tasks_fetch_error)
+        self.btn_do_login.setEnabled(False)
+        self.lbl_login_status.setText("Connecting to CVAT server...")
+        self.mascot.set_state(DancingSvgMascot.STATE_DOWNLOADING)
+
+        self.active_worker = CvatAuthWorker(self.cvat_client, url, user, pwd)
+        self.active_worker.finished_signal.connect(self._on_auth_success)
+        self.active_worker.error_signal.connect(self._on_auth_error)
         self.active_worker.start()
 
-    def _on_tasks_fetched(self, projects: list[dict], tasks: list[dict]):
-        self.mascot.set_state(DancingSvgMascot.STATE_IDLE)
+    def _on_auth_success(self, login_info: dict, projects: list[dict], tasks: list[dict]):
+        self.btn_do_login.setEnabled(True)
+        self.mascot.set_state(DancingSvgMascot.STATE_SUCCESS)
+        username = login_info.get("username") or "User"
+        server_url = login_info.get("server_url")
+        self.lbl_login_status.setText(f"Connected successfully as {username}!")
+        self.lbl_server_info.setText(f"Connected: {server_url} (User: {username})")
 
+        # Populate projects dropdown
         self.cmb_proj_filter.blockSignals(True)
         self.cmb_proj_filter.clear()
         self.cmb_proj_filter.addItem("All Projects", None)
@@ -1486,336 +1273,356 @@ class MainWindow(QMainWindow):
         self.all_tasks_data = tasks
         self._populate_tasks_table(self.all_tasks_data)
         self.lbl_cvat_status.setText(f"Loaded {len(tasks)} tasks across {len(projects)} projects.")
+        self.step_completed[0] = True
 
-    def _on_tasks_fetch_error(self, err_msg: str):
+    def _on_auth_error(self, err_msg: str):
+        self.btn_do_login.setEnabled(True)
         self.mascot.set_state(DancingSvgMascot.STATE_IDLE)
-        self.lbl_cvat_status.setText(f"Fetch error: {err_msg}")
-        QMessageBox.warning(self, "Fetch Tasks Error", err_msg)
+        self.lbl_login_status.setText(f"Connection Failed: {err_msg}")
+        QMessageBox.critical(self, "Connection Error", f"Unable to connect to CVAT server:\n{err_msg}")
+
+    def _fetch_cvat_tasks(self):
+        if not self.cvat_client.is_authenticated():
+            self._on_do_login()
+            return
+        try:
+            self.all_tasks_data = self.cvat_client.get_tasks()
+            self._populate_tasks_table(self.all_tasks_data)
+            self.lbl_cvat_status.setText(f"Refreshed: {len(self.all_tasks_data)} tasks loaded.")
+        except Exception as e:
+            QMessageBox.critical(self, "Refresh Error", f"Error fetching tasks:\n{e}")
+
+    def _populate_tasks_table(self, tasks: list[dict]):
+        self.tbl_tasks.setRowCount(0)
+        self.tbl_tasks.setRowCount(len(tasks))
+
+        for row, t in enumerate(tasks):
+            chk = QTableWidgetItem()
+            chk.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
+            chk.setCheckState(Qt.Unchecked)
+            self.tbl_tasks.setItem(row, 0, chk)
+
+            id_item = QTableWidgetItem(str(t["id"]))
+            id_item.setTextAlignment(Qt.AlignCenter)
+            self.tbl_tasks.setItem(row, 1, id_item)
+
+            name_item = QTableWidgetItem(t["name"])
+            self.tbl_tasks.setItem(row, 2, name_item)
+
+            proj_item = QTableWidgetItem(str(t["project_name"] or "-"))
+            self.tbl_tasks.setItem(row, 3, proj_item)
+
+            stage_item = QTableWidgetItem(str(t["stage"]))
+            stage_item.setTextAlignment(Qt.AlignCenter)
+            self.tbl_tasks.setItem(row, 4, stage_item)
+
+            state_item = QTableWidgetItem(str(t["state"]))
+            state_item.setTextAlignment(Qt.AlignCenter)
+            self.tbl_tasks.setItem(row, 5, state_item)
+
+            status_item = QTableWidgetItem(str(t["status"]))
+            status_item.setTextAlignment(Qt.AlignCenter)
+            self.tbl_tasks.setItem(row, 6, status_item)
+
+            frames_item = QTableWidgetItem(str(t["size"]))
+            frames_item.setTextAlignment(Qt.AlignCenter)
+            self.tbl_tasks.setItem(row, 7, frames_item)
 
     def _apply_task_filters(self):
-        selected_proj_id = self.cmb_proj_filter.currentData()
-        stage_sel = self.cmb_stage_filter.currentText().lower()
-        state_sel = self.cmb_state_filter.currentText().lower()
+        sel_proj_id = self.cmb_proj_filter.currentData()
+        sel_stage = self.cmb_stage_filter.currentText()
+        sel_state = self.cmb_state_filter.currentText()
         search_query = self.txt_task_search.text().strip().lower()
 
         filtered = []
         for t in self.all_tasks_data:
-            if selected_proj_id is not None and t.get("project_id") != selected_proj_id:
+            if sel_proj_id is not None and t["project_id"] != sel_proj_id:
                 continue
-
-            t_stage = str(t.get("stage", "")).lower()
-            if stage_sel != "all" and stage_sel not in t_stage:
+            if sel_stage != "All" and str(t["stage"]).lower() != sel_stage.lower():
                 continue
-
-            t_state = str(t.get("state", "")).lower()
-            if state_sel != "all" and state_sel not in t_state:
+            if sel_state != "All" and str(t["state"]).lower() != sel_state.lower():
                 continue
-
-            if search_query:
-                t_name = str(t.get("name", "")).lower()
-                if search_query not in t_name and str(t.get("id")) != search_query:
-                    continue
-
+            if search_query and search_query not in t["name"].lower():
+                continue
             filtered.append(t)
 
         self._populate_tasks_table(filtered)
-
-    def _populate_tasks_table(self, tasks: list[dict]):
-        self.tbl_tasks.setRowCount(len(tasks))
-        for row, t in enumerate(tasks):
-            chk_item = QTableWidgetItem()
-            chk_item.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
-            chk_item.setCheckState(Qt.Checked)
-            chk_item.setData(Qt.UserRole, t)
-            self.tbl_tasks.setItem(row, 0, chk_item)
-
-            self.tbl_tasks.setItem(row, 1, QTableWidgetItem(str(t.get("id"))))
-            self.tbl_tasks.setItem(row, 2, QTableWidgetItem(str(t.get("name"))))
-            self.tbl_tasks.setItem(row, 3, QTableWidgetItem(str(t.get("project_name"))))
-            self.tbl_tasks.setItem(row, 4, QTableWidgetItem(str(t.get("stage"))))
-            self.tbl_tasks.setItem(row, 5, QTableWidgetItem(str(t.get("state"))))
-            self.tbl_tasks.setItem(row, 6, QTableWidgetItem(str(t.get("status"))))
-            self.tbl_tasks.setItem(row, 7, QTableWidgetItem(str(t.get("size"))))
+        self.lbl_cvat_status.setText(f"Showing {len(filtered)} of {len(self.all_tasks_data)} tasks.")
 
     def _set_all_tasks_checked(self, checked: bool):
         state = Qt.Checked if checked else Qt.Unchecked
-        for row in range(self.tbl_tasks.rowCount()):
-            item = self.tbl_tasks.item(row, 0)
+        for r in range(self.tbl_tasks.rowCount()):
+            item = self.tbl_tasks.item(r, 0)
             if item:
                 item.setCheckState(state)
 
-    def _get_selected_tasks(self) -> list[dict]:
-        selected = []
-        for row in range(self.tbl_tasks.rowCount()):
-            item = self.tbl_tasks.item(row, 0)
-            if item and item.checkState() == Qt.Checked:
-                task_data = item.data(Qt.UserRole)
-                if task_data:
-                    selected.append(task_data)
-        return selected
-
     def _on_download_selected_tasks(self):
-        tasks = self._get_selected_tasks()
-        if not tasks:
-            QMessageBox.warning(self, "No Tasks Selected", "Please select at least one task to download.")
+        if not self.cvat_client.is_authenticated():
+            QMessageBox.warning(self, "Not Connected", "Please connect to CVAT before downloading tasks.")
             return
 
-        dest_dir = Path(self.txt_dl_folder.text().strip())
-        dest_dir.mkdir(parents=True, exist_ok=True)
+        selected_tasks = []
+        for r in range(self.tbl_tasks.rowCount()):
+            chk = self.tbl_tasks.item(r, 0)
+            if chk and chk.checkState() == Qt.Checked:
+                tid = int(self.tbl_tasks.item(r, 1).text())
+                task_dict = next((t for t in self.all_tasks_data if t["id"] == tid), None)
+                if task_dict:
+                    selected_tasks.append(task_dict)
 
+        if not selected_tasks:
+            QMessageBox.warning(self, "No Tasks Selected", "Please select at least one task using the checkboxes.")
+            return
+
+        dest_folder = Path(self.txt_dl_folder.text().strip())
         self.btn_download_tasks.setEnabled(False)
+        self.prog_dl.setValue(0)
         self.mascot.set_state(DancingSvgMascot.STATE_DOWNLOADING)
-        self.lbl_global_status.setText(f"Downloading {len(tasks)} tasks...")
 
-        self.active_worker = CvatDownloadWorker(self.cvat_client, tasks, dest_dir)
+        self.active_worker = CvatDownloadWorker(self.cvat_client, selected_tasks, dest_folder)
         self.active_worker.progress_signal.connect(self._on_download_progress)
-        self.active_worker.task_completed_signal.connect(self._on_task_downloaded)
-        self.active_worker.all_completed_signal.connect(self._on_all_downloads_completed)
+        self.active_worker.finished_signal.connect(self._on_download_finished)
         self.active_worker.error_signal.connect(self._on_download_error)
         self.active_worker.start()
 
-    def _on_download_progress(self, current: int, total: int, msg: str):
-        pct = int((current / total) * 100) if total > 0 else 0
-        self.prog_dl.setValue(pct)
-        self.lbl_cvat_status.setText(msg)
-        self.lbl_global_status.setText(msg)
+    def _on_download_progress(self, cur: int, tot: int, desc: str):
+        self.prog_dl.setMaximum(tot)
+        self.prog_dl.setValue(cur)
+        self.lbl_cvat_status.setText(desc)
 
-    def _on_task_downloaded(self, task_id: int, task_name: str, folder_path: str):
-        pass
-
-    def _on_all_downloads_completed(self, completed_folders: list[Path]):
+    def _on_download_finished(self, results: list):
         self.btn_download_tasks.setEnabled(True)
         self.mascot.set_state(DancingSvgMascot.STATE_SUCCESS)
-        self.prog_dl.setValue(100)
-        self.lbl_cvat_status.setText(f"All {len(completed_folders)} tasks downloaded & cleaned successfully!")
-        self.lbl_global_status.setText("🟢 Download complete! Images flattened from /images/default.")
+        self.prog_dl.setValue(self.prog_dl.maximum())
+        self.lbl_cvat_status.setText(f"Successfully downloaded and extracted {len(results)} tasks into data/raw_tasks!")
         self.step_completed[0] = True
 
-        self.txt_merge_src.setText(str(self.downloads_dir))
-
-        ret = QMessageBox.question(
+        QMessageBox.information(
             self, "Download Complete",
-            f"Successfully downloaded {len(completed_folders)} tasks in COCO 1.0 format.\n"
-            f"All images extracted and moved from /images/default directly to /images!\n\n"
-            f"Would you like to proceed to Step 2 (Merge & Convert) now?",
-            QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes
+            f"Successfully downloaded {len(results)} tasks!\n\n"
+            f"All images extracted and flattened (default folder removed).\n"
+            f"Location: {self.txt_dl_folder.text()}\n\n"
+            f"You can now switch to '2. Merge Datasets' to unify them."
         )
-        if ret == QMessageBox.Yes:
-            self._go_to_step(1)
 
     def _on_download_error(self, err_msg: str):
         self.btn_download_tasks.setEnabled(True)
         self.mascot.set_state(DancingSvgMascot.STATE_IDLE)
         self.lbl_cvat_status.setText(f"Download Error: {err_msg}")
-        self.lbl_global_status.setText("🔴 Download Error")
         QMessageBox.critical(self, "Download Error", f"An error occurred during download:\n{err_msg}")
 
     # -----------------------------------------------------------------
-    # Step 2: Merge & Convert Slots
+    # Merge Datasets Slots
     # -----------------------------------------------------------------
     def _on_run_merge(self):
-        src_path = Path(self.txt_merge_src.text().strip())
-        dst_path = Path(self.txt_merge_dst.text().strip())
+        src_dir = Path(self.txt_merge_src.text().strip())
+        dst_dir = Path(self.txt_merge_dst.text().strip())
 
-        if not src_path.exists():
-            QMessageBox.warning(self, "Error", f"Source directory does not exist: {src_path}")
+        if not src_dir.exists():
+            QMessageBox.warning(self, "Directory Not Found", f"Source directory does not exist:\n{src_dir}")
             return
 
         self.btn_run_merge.setEnabled(False)
+        self.prog_merge.setValue(0)
+        self.lbl_merge_stats.setText("Merging datasets...")
         self.mascot.set_state(DancingSvgMascot.STATE_PROCESSING)
-        self.lbl_global_status.setText("Merging COCO datasets...")
 
-        self.active_worker = MergeWorker([src_path], dst_path)
+        self.active_worker = MergeWorker(self.merger_engine, src_dir, dst_dir)
         self.active_worker.progress_signal.connect(self._on_merge_progress)
         self.active_worker.finished_signal.connect(self._on_merge_finished)
         self.active_worker.error_signal.connect(self._on_merge_error)
         self.active_worker.start()
 
-    def _on_merge_progress(self, current: int, total: int, msg: str):
-        pct = int((current / total) * 100) if total > 0 else 0
-        self.prog_merge_conv.setValue(pct)
-        self.lbl_merge_stats.setText(msg)
+    def _on_merge_progress(self, cur: int, tot: int, desc: str):
+        self.prog_merge.setMaximum(tot)
+        self.prog_merge.setValue(cur)
+        self.lbl_merge_stats.setText(desc)
 
-    def _on_merge_finished(self, res: dict):
+    def _on_merge_finished(self, stats: dict):
         self.btn_run_merge.setEnabled(True)
         self.mascot.set_state(DancingSvgMascot.STATE_SUCCESS)
-        self.prog_merge_conv.setValue(100)
+        self.prog_merge.setValue(self.prog_merge.maximum())
+        self.step_completed[1] = True
 
-        classes_str = ", ".join(c["name"] for c in res["categories"])
-        stats_text = (
-            f"✅ Merge Complete! Datasets: {res['jsons_count']} | Total Images: {res['images_count']} | "
-            f"Total Annotations: {res['annotations_count']} | Classes ({len(res['categories'])}): [{classes_str}]"
+        msg = (
+            f"Merge Complete!\n"
+            f"• Merged Images: {stats['total_images']}\n"
+            f"• Merged Annotations: {stats['total_annotations']}\n"
+            f"• Unified Categories: {stats['total_categories']}\n"
+            f"• Duplicate Filenames Resolved: {stats['duplicates_resolved']}\n"
+            f"• Output COCO JSON: {stats['output_annotation_path']}"
         )
-        self.lbl_merge_stats.setText(stats_text)
-        self.lbl_global_status.setText("🟢 Datasets merged successfully.")
-
-        self.txt_split_img_src.setText(str(res["images_dir"]))
-        self.txt_split_lbl_src.setText(str(self.merged_dir / "labels"))
+        self.lbl_merge_stats.setText(msg)
+        QMessageBox.information(self, "Merge Succeeded", msg)
 
     def _on_merge_error(self, err_msg: str):
         self.btn_run_merge.setEnabled(True)
         self.mascot.set_state(DancingSvgMascot.STATE_IDLE)
         self.lbl_merge_stats.setText(f"Merge Error: {err_msg}")
-        QMessageBox.critical(self, "Merge Error", err_msg)
+        QMessageBox.critical(self, "Merge Error", f"Failed to merge datasets:\n{err_msg}")
 
+    # -----------------------------------------------------------------
+    # COCO to YOLO Converter Slots
+    # -----------------------------------------------------------------
     def _on_task_mode_changed(self):
         mode = "detect" if self.rb_mode_det.isChecked() else "segment"
         self.cmb_train_task.setCurrentText(mode)
 
     def _on_run_convert(self):
-        coco_json = Path(self.txt_merge_dst.text().strip()) / "annotations" / "instances_default.json"
+        coco_json = Path(self.txt_conv_json.text().strip())
         if not coco_json.exists():
-            coco_json = Path(self.txt_merge_dst.text().strip()) / "annotations" / "instances_merged.json"
+            alt = self.data_dir / "annotations" / "instances_default.json"
+            if alt.exists():
+                coco_json = alt
         if not coco_json.exists():
-            QMessageBox.warning(self, "File Not Found", f"COCO JSON not found at:\n{coco_json}\nPlease run Merge first.")
+            QMessageBox.warning(self, "File Not Found", f"COCO JSON not found at:\n{coco_json}\nPlease run Merge first or select an existing COCO JSON file.")
             return
 
         out_labels = Path(self.txt_conv_labels_dst.text().strip())
         mode = "detect" if self.rb_mode_det.isChecked() else "segment"
 
         self.btn_run_convert.setEnabled(False)
+        self.prog_convert.setValue(0)
+        self.lbl_conv_stats.setText(f"Converting COCO 1.0 to YOLO {mode.upper()}...")
         self.mascot.set_state(DancingSvgMascot.STATE_PROCESSING)
-        self.lbl_global_status.setText(f"Converting COCO to YOLO ({mode})...")
 
-        self.active_worker = ConvertWorker(coco_json, out_labels, mode)
+        self.active_worker = ConvertWorker(self.converter_engine, coco_json, out_labels, mode)
         self.active_worker.progress_signal.connect(self._on_convert_progress)
         self.active_worker.finished_signal.connect(self._on_convert_finished)
         self.active_worker.error_signal.connect(self._on_convert_error)
         self.active_worker.start()
 
-    def _on_convert_progress(self, current: int, total: int, msg: str):
-        pct = int((current / total) * 100) if total > 0 else 0
-        self.prog_merge_conv.setValue(pct)
-        self.lbl_conv_stats.setText(msg)
+    def _on_convert_progress(self, cur: int, tot: int, desc: str):
+        self.prog_convert.setMaximum(tot)
+        self.prog_convert.setValue(cur)
+        self.lbl_conv_stats.setText(desc)
 
-    def _on_convert_finished(self, res: dict):
+    def _on_convert_finished(self, stats: dict):
         self.btn_run_convert.setEnabled(True)
         self.mascot.set_state(DancingSvgMascot.STATE_SUCCESS)
-        self.prog_merge_conv.setValue(100)
-        self.step_completed[1] = True
+        self.prog_convert.setValue(self.prog_convert.maximum())
+        self.step_completed[2] = True
 
-        classes_str = ", ".join(res["classes"])
-        stats_text = (
-            f"✅ Converted for [{res['mode'].upper()}]: Total Images: {res['total_images']} | "
-            f"Labeled Images: {res['images_with_labels']} | Annotations: {res['total_annotations_written']} | "
-            f"Classes ({res['num_classes']}): [{classes_str}]"
+        msg = (
+            f"Conversion Complete! (Mode: {stats['mode'].upper()})\n"
+            f"• Total Images Processed: {stats['total_images']}\n"
+            f"• Label Files Written: {stats['converted_images']}\n"
+            f"• Total Annotations: {stats['total_annotations_written']}\n"
+            f"• Classes: {len(stats['classes'])} ({', '.join(stats['classes'][:5])}...)\n"
+            f"• Output Folder: {stats['output_labels_dir']}"
         )
-        self.lbl_conv_stats.setText(stats_text)
-        self.lbl_global_status.setText("🟢 Conversion to YOLO format complete.")
-
-        self.txt_split_lbl_src.setText(str(res["output_dir"]))
-
-        ret = QMessageBox.question(
-            self, "Conversion Complete",
-            f"{stats_text}\n\nWould you like to proceed to Step 3 (Dataset Splitter)?",
-            QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes
-        )
-        if ret == QMessageBox.Yes:
-            self._go_to_step(2)
+        self.lbl_conv_stats.setText(msg)
+        QMessageBox.information(self, "Conversion Succeeded", msg)
 
     def _on_convert_error(self, err_msg: str):
         self.btn_run_convert.setEnabled(True)
         self.mascot.set_state(DancingSvgMascot.STATE_IDLE)
         self.lbl_conv_stats.setText(f"Conversion Error: {err_msg}")
-        QMessageBox.critical(self, "Conversion Error", err_msg)
+        QMessageBox.critical(self, "Conversion Error", f"Failed to convert annotations:\n{err_msg}")
 
     # -----------------------------------------------------------------
-    # Step 3: Dataset Split Slots
+    # Dataset Splitter Slots
     # -----------------------------------------------------------------
     def _on_run_split(self):
-        img_src = Path(self.txt_split_img_src.text().strip())
-        lbl_src = Path(self.txt_split_lbl_src.text().strip())
-        dst_dir = Path(self.txt_split_dst.text().strip())
+        img_dir = Path(self.txt_split_img_src.text().strip())
+        lbl_dir = Path(self.txt_split_lbl_src.text().strip())
+        out_dst = Path(self.txt_split_dst.text().strip())
 
-        if not img_src.exists():
-            QMessageBox.warning(self, "Error", f"Images directory does not exist: {img_src}")
+        if not img_dir.exists():
+            QMessageBox.warning(self, "Folder Not Found", f"Images folder does not exist:\n{img_dir}")
             return
-        if not lbl_src.exists():
-            QMessageBox.warning(self, "Error", f"Labels directory does not exist: {lbl_src}")
+        if not lbl_dir.exists():
+            QMessageBox.warning(self, "Folder Not Found", f"Labels folder does not exist:\n{lbl_dir}")
             return
-
-        coco_json = Path(self.txt_merge_dst.text().strip()) / "annotations" / "instances_default.json"
 
         r_train = self.spin_train.value() / 100.0
         r_val = self.spin_val.value() / 100.0
         r_test = self.spin_test.value() / 100.0
 
+        coco_json = self.data_dir / "annotations" / "instances_default.json"
+
         self.btn_run_split.setEnabled(False)
+        self.prog_split.setValue(0)
+        self.lbl_split_stats.setText("Splitting dataset and generating data.yaml...")
         self.mascot.set_state(DancingSvgMascot.STATE_PROCESSING)
-        self.lbl_global_status.setText("Splitting dataset into train/val/test...")
 
         self.active_worker = SplitWorker(
-            images_dir=img_src,
-            labels_dir=lbl_src,
-            out_dir=dst_dir,
-            coco_json=coco_json if coco_json.exists() else None,
-            train_r=r_train,
-            val_r=r_val,
-            test_r=r_test,
+            splitter=self.splitter_engine,
+            img_dir=img_dir,
+            lbl_dir=lbl_dir,
+            out_dir=out_dst,
+            r_train=r_train,
+            r_val=r_val,
+            r_test=r_test,
+            coco_json=coco_json if coco_json.exists() else None
         )
         self.active_worker.progress_signal.connect(self._on_split_progress)
         self.active_worker.finished_signal.connect(self._on_split_finished)
         self.active_worker.error_signal.connect(self._on_split_error)
         self.active_worker.start()
 
-    def _on_split_progress(self, current: int, total: int, msg: str):
-        pct = int((current / total) * 100) if total > 0 else 0
-        self.prog_split.setValue(pct)
-        self.lbl_split_stats.setText(msg)
+    def _on_split_progress(self, cur: int, tot: int, desc: str):
+        self.prog_split.setMaximum(tot)
+        self.prog_split.setValue(cur)
+        self.lbl_split_stats.setText(desc)
 
-    def _on_split_finished(self, res: dict):
+    def _on_split_finished(self, stats: dict):
         self.btn_run_split.setEnabled(True)
         self.mascot.set_state(DancingSvgMascot.STATE_SUCCESS)
-        self.prog_split.setValue(100)
-        self.step_completed[2] = True
+        self.prog_split.setValue(self.prog_split.maximum())
+        self.step_completed[3] = True
 
-        classes_str = ", ".join(res["classes"])
-        stats_text = (
-            f"✅ Split Complete! Total Images: {res['total_images']} (Labeled: {res['labeled_images']}, "
-            f"Backgrounds: {res['background_images']})\n"
-            f"Partition: Train = {res['train_count']} | Val = {res['val_count']} | Test = {res['test_count']}\n"
-            f"Classes ({res['num_classes']}): [{classes_str}] -> data.yaml created successfully!"
+        yaml_path = stats.get("data_yaml")
+        if yaml_path:
+            self.txt_data_yaml.setText(str(yaml_path))
+
+        msg = (
+            f"Dataset Split Complete!\n"
+            f"• Total Images (100%): {stats['total_images']}\n"
+            f"• Train Set: {stats['train_count']} images\n"
+            f"• Validation Set: {stats['val_count']} images\n"
+            f"• Test Set: {stats['test_count']} images\n"
+            f"• Labeled Images: {stats['labeled_images']} | Background Images: {stats['background_images']}\n"
+            f"• Created: {yaml_path}"
         )
-        self.lbl_split_stats.setText(stats_text)
-        self.lbl_global_status.setText("🟢 Split complete. All images included.")
-
-        self.txt_data_yaml.setText(str(res["data_yaml_path"]))
+        self.lbl_split_stats.setText(msg)
         self._refresh_yaml_preview()
-
-        ret = QMessageBox.question(
-            self, "Split Complete",
-            f"{stats_text}\n\nWould you like to proceed to Step 4 (YOLO Auto-Trainer)?",
-            QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes
-        )
-        if ret == QMessageBox.Yes:
-            self._go_to_step(3)
+        QMessageBox.information(self, "Split Succeeded", msg)
 
     def _on_split_error(self, err_msg: str):
         self.btn_run_split.setEnabled(True)
         self.mascot.set_state(DancingSvgMascot.STATE_IDLE)
         self.lbl_split_stats.setText(f"Split Error: {err_msg}")
-        QMessageBox.critical(self, "Split Error", err_msg)
+        QMessageBox.critical(self, "Split Error", f"Failed to split dataset:\n{err_msg}")
 
     # -----------------------------------------------------------------
-    # Step 4: YOLO Trainer Slots
+    # YOLO Trainer Slots
     # -----------------------------------------------------------------
+    def _browse_model_pt(self):
+        f, _ = QFileDialog.getOpenFileName(self, "Select YOLO Model Weights", "", "PyTorch Weights (*.pt)")
+        if f:
+            self.txt_custom_model.setText(str(Path(f).resolve()))
+
+    def _browse_data_yaml(self):
+        f, _ = QFileDialog.getOpenFileName(self, "Select data.yaml", str(self.data_dir), "YAML Files (*.yaml *.yml)")
+        if f:
+            self.txt_data_yaml.setText(str(Path(f).resolve()))
+            self._refresh_yaml_preview()
+
     def _update_model_presets(self):
-        if not hasattr(self, "cmb_train_task") or not hasattr(self, "cmb_model_preset"):
-            return
         task = self.cmb_train_task.currentText()
         self.cmb_model_preset.clear()
-
         if task == "detect":
             presets = [
                 "yolo11n.pt", "yolo11s.pt", "yolo11m.pt", "yolo11l.pt", "yolo11x.pt",
-                "yolov8n.pt", "yolov8s.pt", "yolov8m.pt", "yolov8l.pt", "yolov8x.pt",
-                "yolo26n.pt", "yolo26s.pt", "yolo26m.pt", "yolo26l.pt",
+                "yolov8n.pt", "yolov8s.pt", "yolov8m.pt", "yolov8l.pt",
+                "yolo26n.pt", "yolo26s.pt", "yolo26m.pt", "yolo26l.pt"
             ]
         else:
             presets = [
-                "yolo11n-seg.pt", "yolo11s-seg.pt", "yolo11m-seg.pt", "yolo11l-seg.pt", "yolo11x-seg.pt",
-                "yolov8n-seg.pt", "yolov8s-seg.pt", "yolov8m-seg.pt", "yolov8l-seg.pt", "yolov8x-seg.pt",
-                "yolo26n-seg.pt", "yolo26s-seg.pt", "yolo26m-seg.pt", "yolo26l-seg.pt",
+                "yolo11n-seg.pt", "yolo11s-seg.pt", "yolo11m-seg.pt", "yolo11l-seg.pt",
+                "yolov8n-seg.pt", "yolov8s-seg.pt", "yolov8m-seg.pt",
+                "yolo26n-seg.pt", "yolo26s-seg.pt", "yolo26m-seg.pt"
             ]
         self.cmb_model_preset.addItems(presets)
         self._update_run_preview()
@@ -1843,14 +1650,7 @@ class MainWindow(QMainWindow):
             exts = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
             num_images = len([p for p in images_dir.iterdir() if p.suffix.lower() in exts])
 
-        is_gpu = torch.cuda.is_available()
-        recommended = auto_tune_hyperparameters(
-            num_images=num_images,
-            num_annotations=num_images * 3,
-            num_classes=2,
-            is_gpu=is_gpu,
-        )
-
+        recommended = auto_tune_hyperparameters(num_images, num_classes=1)
         self.spin_epochs.setValue(recommended["epochs"])
         self.spin_batch.setValue(recommended["batch"])
         self.spin_imgsz.setValue(recommended["imgsz"])
@@ -1943,9 +1743,8 @@ class MainWindow(QMainWindow):
         self.btn_stop_train.setEnabled(False)
         self.mascot.set_state(DancingSvgMascot.STATE_SUCCESS)
         self.prog_train.setValue(100)
-        self.lbl_global_status.setText("🟢 Training session completed!")
-        self.step_completed[3] = True
-
+        self.lbl_global_status.setText("Training session completed!")
+        self.step_completed[4] = True
         self._update_run_preview()
 
         run_dir = res.get("run_dir")
@@ -1957,30 +1756,25 @@ class MainWindow(QMainWindow):
             f"• Output Folder: {run_dir}\n"
             f"• Best Weights: {best_pt}\n"
             f"• Custom Named Weights: {custom_pt}\n\n"
-            f"Would you like to view the outputs in Step 5 (Runs & Explorer)?"
+            f"Weights and logs are saved in runs/ and weights/."
         )
-        ret = QMessageBox.information(self, "Training Complete", summary, QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
-        if ret == QMessageBox.Yes:
-            self._go_to_step(4)
+        self.lbl_global_status.setText("Training completed successfully!")
+        QMessageBox.information(self, "Training Complete", summary)
 
     def _on_train_error(self, err_msg: str):
         self.btn_start_train.setEnabled(True)
         self.btn_stop_train.setEnabled(False)
         self.mascot.set_state(DancingSvgMascot.STATE_IDLE)
-        self.lbl_global_status.setText("🔴 Training Error")
-        self.txt_train_log.appendPlainText(f"\n❌ Training Error:\n{err_msg}")
-        QMessageBox.critical(self, "Training Error", err_msg)
+        self.lbl_global_status.setText(f"Training Failed: {err_msg}")
+        self.txt_train_log.appendPlainText(f"\n❌ Training Error: {err_msg}")
+        QMessageBox.critical(self, "Training Error", f"Training encountered an error:\n{err_msg}")
 
-    # -----------------------------------------------------------------
-    # Step 5: Explorer Slots
-    # -----------------------------------------------------------------
     def _refresh_yaml_preview(self):
         yaml_path = Path(self.txt_data_yaml.text().strip())
         if yaml_path.exists():
             try:
-                content = yaml_path.read_text(encoding="utf-8")
-                self.txt_yaml_preview.setPlainText(content)
+                self.txt_yaml_preview.setPlainText(yaml_path.read_text(encoding="utf-8"))
             except Exception as e:
-                self.txt_yaml_preview.setPlainText(f"Error reading data.yaml: {e}")
+                self.txt_yaml_preview.setPlainText(f"Error reading {yaml_path}:\n{e}")
         else:
-            self.txt_yaml_preview.setPlainText("data.yaml does not exist yet. Run Split step in Step 3.")
+            self.txt_yaml_preview.setPlainText(f"data.yaml not found at:\n{yaml_path}")

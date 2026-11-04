@@ -28,10 +28,12 @@ env/
 .env
 
 # Data & Training Outputs
+data/
 downloads/
 merged/
 dataset/
 runs/
+weights/
 *.zip
 *.pt
 *.onnx

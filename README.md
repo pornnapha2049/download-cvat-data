@@ -1,62 +1,66 @@
-# 🚀 CVAT to YOLO Studio & Auto-Trainer (Enterprise AI Pipeline)
+# 🚀 CVAT to YOLO Studio & Auto-Trainer (Standalone AI Pipeline)
 
-โปรแกรม Python GUI (PyQt5) สำหรับดาวน์โหลด Annotation และรูปภาพจาก **CVAT** (`http://1.10.131.222:8080/projects`), ทำการแตกไฟล์และย้ายรูปออกจากโฟลเดอร์ `default` อัตโนมัติ, รวม Dataset (Merge), แปลงฟอร์แมต COCO 1.0 เป็น YOLO (Detection & Segmentation), แบ่งข้อมูล Train / Val / Test (ครอบคลุมทุกรูปทั้งที่มี Label และไม่มี Label/รูป Background), และ Train โมเดล YOLO ด้วยระบบ Auto-Tune Hyperparameters, Early Stopping (Patience), พร้อมระบบ Run Versioning (`_v1`, `_v2`, ...) และบันทึก Weights ชื่อตามโฟลเดอร์ที่ตั้ง พร้อมตกแต่งด้วย **SVG Mascot ดิ้นได้ (Animated SVG Mascot)** สุดทันสมัย!
+โปรแกรม Python GUI (PyQt5) สำหรับประมวลผล Computer Vision แบบ **All-in-One Standalone Pipeline**:
+1. ดาวน์โหลด Annotation และรูปภาพจาก **CVAT** (แตกไฟล์และย้ายรูปออกจากโฟลเดอร์ `default` อัตโนมัติ พร้อมลบโฟลเดอร์ `default` ทิ้ง)
+2. รวม Dataset หลายๆ Task เข้าด้วยกัน (Merge & MD5 Deduplication)
+3. แปลงฟอร์แมต COCO 1.0 เป็น YOLO (Detection Bounding Box หรือ Segmentation Polygon)
+4. แบ่งข้อมูล Train / Val / Test (ครอบคลุมทุกรูป 100% ทั้งที่มี Label และไม่มี Label/รูป Background)
+5. Train โมเดล YOLO ด้วยระบบ Auto-Tune Hyperparameters, Early Stopping (Patience), Run Versioning (`_v1`, `_v2`, ...) และบันทึก Weights ชื่อตามที่ตั้ง
 
 ---
 
 ## 🌟 ฟีเจอร์เด่น (Key Features)
 
-1. **หน้าจอ Login แยกเป็นสัดส่วน (Dedicated Authentication Screen)**:
-   - เปิดโปรแกรมมาจะพบกับหน้า **Sign-In เข้าสู่ระบบ CVAT** สวยงามทันสมัย (Cyber Glassmorphism Card)
-   - มี **Dancing SVG Mascot ("Byte")** ต้อนรับ ดิ้นโบกมือและกระพริบตาเรืองแสง
-   - กรอก **CVAT Server URL**, **Username** และ **Password** พร้อมระบบตรวจสอบสถานะการเชื่อมต่อ
-   - มีปุ่ม **"📁 Work with Local Datasets (Skip Login / Offline Mode)"** สำหรับกรณีที่มี Dataset อยู่แล้วและต้องการข้ามไปใช้งาน Merge/Convert/Split/Train ได้ทันทีโดยไม่ต้องล็อกอิน
-   - ในหน้า Studio มีปุ่ม **"🚪 Logout"** ที่แถบ Header เพื่อสลับผู้ใช้หรือเปลี่ยน Server ได้ตลอดเวลา
+1. **ทุกหน้าทำงานแบบ Standalone อิสระต่อกัน (All Pages Standalone)**:
+   - เปิดโปรแกรมมาสามารถเลือกใช้งานเครื่องมือหน้าไหนก็ได้ทันทีผ่านแถบนำทางด้านบน (1-5) โดยไม่ต้องเรียงลำดับขั้นตอน
+   - แต่ละหน้ามีตัวเลือก Input / Output และปุ่มประมวลผลของตนเองอย่างสมบูรณ์ ไม่จำเป็นต้องผ่านหน้าจอด่านกัก (Login Barrier)
+   - หากมีไฟล์ Dataset อยู่แล้ว สามารถข้ามไปหน้า Split, Convert หรือ Train ได้ทันที
 
-2. **CVAT Connect & Smart Task Downloader**:
-   - ดึงรายการ Project และ Tasks พร้อมแสดงข้อมูล Stage, State, Status, จำนวนภาพ
-   - ตัวกรองสถานะ: Filter ตาม Project, Stage (เช่น `acceptance`, `annotation`, `validation`), State (เช่น `completed`, `in progress`, `new`, `rejected`), Status, และค้นหาตามชื่อ Task หรือเลือก Checkbox ทีละอันได้อิสระ
-   - ดาวน์โหลดในฟอร์แมต **COCO 1.0** พร้อมภาพ
-   - **แตกไฟล์ ZIP อัตโนมัติ**
-   - **นำรูปออกจากโฟลเดอร์ `/images/default/` มาไว้ที่ `/images/` แล้วลบโฟลเดอร์ `default` ทิ้งทันทีตามคำขอ**
+2. **รวมไฟล์ข้อมูลทั้งหมดไว้ในโฟลเดอร์ `data/` เดียว (Single Unified Data Folder)**:
+   - ไม่มีการสร้างโฟลเดอร์กระจัดกระจาย ข้อมูลภาพและ Label ทั้งหมดจัดเก็บอย่างเป็นระเบียบภายใต้โฟลเดอร์ `C:\Articulus\cvat\data`:
+     - `data/raw_tasks/`: เก็บไฟล์ดิบของ Tasks ที่ดาวน์โหลดมาจาก CVAT
+     - `data/images/`: เก็บไฟล์รูปภาพทั้งหมด (รวมถึงรูปภาพที่แบ่ง Train, Val, Test)
+     - `data/labels/`: เก็บไฟล์ Label `.txt` ของ YOLO (แบ่ง Train, Val, Test)
+     - `data/annotations/`: เก็บไฟล์ `instances_default.json` ของ COCO 1.0
+     - `data/data.yaml`: ไฟล์คอนฟิกสำหรับใช้ Train โมเดล YOLO
+   - มีปุ่ม **"Open data/ Folder"** ที่แถบ Header เพื่อเปิดดูข้อมูลใน Windows File Explorer ได้ตลอดเวลา
 
-2. **Dataset Merger (รวมรูปภาพและ Annotations ทั้งหมด)**:
-   - รวมทุก Task ที่ดาวน์โหลดมาเข้าเป็น Unified COCO Dataset
+3. **ไม่มี URL เริ่มต้น (No Default URL)**:
+   - ช่องกรอก **CVAT Server URL** เริ่มต้นเป็นช่องว่าง พร้อมตัวอย่าง Placeholder เพื่อให้ผู้ใช้กรอกหรือแปะ URL เซิร์ฟเวอร์ของตนเองได้อย่างอิสระและปลอดภัย
+
+4. **CVAT Connect & Smart Task Downloader (Standalone)**:
+   - เชื่อมต่อ CVAT Server และดึงรายการ Project / Tasks พร้อมข้อมูล Stage, State, Status, จำนวนภาพ
+   - ตัวกรองสถานะ: Filter ตาม Project, Stage (`acceptance`, `annotation`, `validation`), State (`completed`, `in progress`, `new`, `rejected`), Status, และค้นหาตามชื่อ Task หรือเลือก Checkbox ทีละอันได้อิสระ
+   - ดาวน์โหลดในฟอร์แมต **COCO 1.0** พร้อมภาพ และแตกไฟล์ ZIP อัตโนมัติ
+   - **นำรูปออกจากโฟลเดอร์ `/images/default/` มาไว้ที่ `/images/` แล้วลบโฟลเดอร์ `default` ทิ้งทันที**
+
+5. **Dataset Merger (รวมรูปภาพและ Annotations)**:
+   - รวมทุก Task ที่ดาวน์โหลดมาเข้าเป็น Unified COCO Dataset ภายในโฟลเดอร์ `data/`
    - ระบบป้องกันชื่อไฟล์ภาพซ้ำกันข้าม Task ด้วย MD5 Collision Resolver
    - ปรับ Category ID และ Annotation ID ใหม่ให้อัตโนมัติ
 
-3. **COCO 1.0 to YOLO Converter**:
+6. **COCO 1.0 to YOLO Converter**:
    - รองรับ 2 โหมด:
-     - 🎯 **Detection (`detect`)**: แปลง Annotation จาก Segmentation Polygon เป็น Bounding Box (`cls xc yc w h` แบบ Normalized) อัตโนมัติตามโจทย์
+     - 🎯 **Detection (`detect`)**: แปลง Annotation จาก Segmentation Polygon เป็น Bounding Box (`cls xc yc w h` แบบ Normalized)
      - 🔷 **Segmentation (`segment`)**: รักษาพิกัด Polygon ละเอียด (`cls x1 y1 x2 y2 ...` แบบ Normalized)
-   - สร้างไฟล์ Label `.txt` ให้ทุกภาพ
+   - สร้างไฟล์ Label `.txt` ให้ทุกภาพไว้ใน `data/labels/`
 
-4. **Train / Val / Test Splitter**:
-   - ปรับสัดส่วนเปอร์เซ็นต์ได้ตามใจชอบ เช่น Train 70% / Val 20% / Test 10%
-   - **นำทุกรูปเข้าร่วมการ Train (รวมถึงภาพที่ไม่มี Label หรือ Background Images จะถูกสร้างเป็นไฟล์ Label ว่างตามมาตรฐาน Ultralytics YOLO)**
-   - สร้างไฟล์คอนฟิก `data.yaml` อัตโนมัติด้วย Absolute Path พร้อมใช้งาน
+7. **Train / Val / Test Splitter**:
+   - ปรับสัดส่วนเปอร์เซ็นต์ได้อิสระ เช่น Train 70% / Val 20% / Test 10%
+   - **นำทุกรูปเข้าร่วมการ Train (รวมถึงภาพที่ไม่มี Label หรือ Background Images จะได้รับไฟล์ Label ว่างตามมาตรฐาน Ultralytics YOLO)**
+   - สร้างไฟล์คอนฟิก `data.yaml` อัตโนมัติด้วย Absolute Path
 
-5. **YOLO Auto-Trainer & Early Stopping**:
-   - รองรับทั้งงาน Detection และ Segmentation
-   - รองรับโมเดลตระกูล **YOLO11, YOLOv8, YOLO26 (26n, 26s, 26m, 26l)** หรือเลือกไฟล์ `.pt` ของตนเองได้
-   - **Auto-Tune Hyperparameters**: คำนวณ Epochs, Batch Size, Img Size, Learning Rate และ Early Stopping (Patience) ที่เหมาะสมกับจำนวนภาพและคลาสที่มีให้อัตโนมัติ พร้อมให้ User แก้ไขได้ทุกค่า
-   - **Early Stopping (Patience)**: หยุด Train ทันทีเมื่อค่า Loss/mAP นิ่งหรือไม่ดีขึ้นตามจำนวน Epochs ที่กำหนด
-   - **Auto-Versioning Folder Naming**: บันทึกโฟลเดอร์ตามชื่อที่ User ตั้ง เช่น `runs/detect/my_model_v1`, ถ้ารันชื่อเดิมซ้ำจะขยับเป็น `_v2`, `_v3`, `_v4` อัตโนมัติ
-   - **Custom Named Best Weights**: บันทึกและคัดลอกไฟล์ `best.pt` เป็น `{custom_name}.pt` ไว้ในโฟลเดอร์ `weights/` ทันทีหลัง Train เสร็จ
-   - ปุ่ม Stop Training สำหรับสั่งหยุด Train อย่างปลอดภัยได้ตลอดเวลา
+8. **YOLO Auto-Trainer & Early Stopping**:
+   - รองรับทั้งงาน Detection และ Segmentation ตระกูล **YOLO11, YOLOv8, YOLO26 (26n, 26s, 26m, 26l)** หรือ Custom `.pt`
+   - **Auto-Tune Hyperparameters**: คำนวณ Epochs, Batch Size, Img Size, Learning Rate และ Early Stopping (Patience) ที่เหมาะสมกับขนาดข้อมูล
+   - **Early Stopping (Patience)**: หยุด Train ทันทีเมื่อค่า Loss/mAP นิ่ง
+   - **Auto-Versioning Folder Naming**: บันทึกโฟลเดอร์ตามชื่อที่ตั้ง เช่น `runs/detect/my_model_v1`, `_v2`, `_v3` อัตโนมัติ
+   - **Custom Named Best Weights**: คัดลอก `best.pt` เป็น `{custom_name}.pt` ไว้ในโฟลเดอร์ `weights/` ทันทีหลัง Train เสร็จ
 
-6. **ดีไซน์สไตล์ Mindfulness, Pastel Wellness & Study Stationery (SVG ทุกไอคอน)**:
-   - ออกแบบตามสไตล์ UI สุขภาพจิตและการเรียนที่สบายตา อิงตาม [Pinterest Design](https://i.pinimg.com/1200x/69/a3/a3/69a3a365c2017d08d2c1ce4795633dd5.jpg):
-     - โทนสีสงบ ละมุนตา: **Soft Slate-Cream (#f0f4f8)**, **Crisp White Cards (#ffffff)**, **Deep Slate Navy (#132c3f)**, **Matcha Mint (#daf0dd)**, **Lavender Rose (#fde4ed)** และ **Butter Yellow (#fef3d1)**
-     - การ์ดขอบมนนุ่มนวล (16px - 20px) พร้อมเงาบางเบาและปุ่มทรง Pill ทันสมัย
-   - **ไอคอนทุกตัวในระบบเขียนเป็น SVG เวกเตอร์แท้ 100% (`ui/svg_icons.py`)**:
-     - เส้นขอบคมชัด สไตล์มินิมอล ลายเส้นโค้งมน พร้อมเฉดสีพาสเทล
-     - ออกแบบไอคอนเฉพาะทาง: **Lotus in Bowl**, **Zen Balance Stones**, **Mind Detox Brain**, **Gratitude Sunburst**, **Notification Bell**, **Bar Charts**, **Circular Arrow Pills**, **Cloud Download**, **Merge Streams**, **Magic Convert Wand**, **Split Cards**, **Rocket Trainer**
-     - รองรับการเรนเดอร์ High-DPI คมชัดทุกขนาดหน้าจอ พร้อมระบบ In-memory Caching
-   - แบ่งขั้นตอนการทำงานออกเป็น **5 หน้า (Steps)** อย่างชัดเจน:
-     - `1. Task Explorer` ➔ `2. Merge & Convert` ➔ `3. Dataset Splitter` ➔ `4. YOLO Auto-Trainer` ➔ `5. Runs & Explorer`
-   - **Interactive Stepper Bar**: ด้านบนแสดงปุ่มขั้นตอนทั้ง 5 พร้อมไอคอน SVG ประจำแต่ละขั้นตอน
-   - ตกแต่งด้วย **Dancing SVG Mascot ("Clover Byte" .☘︎ ݁˖)** ดิ้นโบกมือและเปลี่ยนท่าทางตามสถานะการทำงานแบบเรียลไทม์
+9. **ดีไซน์ Mindfulness Pastel Wellness พร้อม SVG Vector แท้ 100%**:
+   - ออกแบบตามโทนสีสุขภาพจิตและการเรียนที่สบายตา ([Pinterest Reference](https://i.pinimg.com/1200x/69/a3/a3/69a3a365c2017d08d2c1ce4795633dd5.jpg))
+   - คลังไอคอน SVG 33 แบบใน [`ui/svg_icons.py`](file:///C:/Articulus/cvat/ui/svg_icons.py) คมชัดทุกขนาดหน้าจอ
+   - ตกแต่งด้วย **Dancing SVG Mascot ("Clover Byte" .☘︎ ݁˖)** ดิ้นโบกมือและตอบสนองตามสถานะการทำงาน
 
 ---
 
@@ -66,19 +70,25 @@
 C:\Articulus\cvat\
 ├── app.py                     # ตัวเปิดโปรแกรมหลัก (GUI Launcher)
 ├── requirements.txt           # รายการแพ็กเกจที่ต้องใช้งาน
+├── data/                      # โฟลเดอร์รวมข้อมูล Dataset ทั้งหมดเพียงโฟลเดอร์เดียว
+│   ├── raw_tasks/             # Tasks ดิบที่ดาวน์โหลดมาจาก CVAT
+│   ├── images/                # รูปภาพทั้งหมด (และ images/train, val, test)
+│   ├── labels/                # ไฟล์ Label .txt (และ labels/train, val, test)
+│   ├── annotations/           # COCO 1.0 instances_default.json
+│   └── data.yaml              # ไฟล์คอนฟิกสำหรับ Train YOLO
+├── runs/                      # ผลลัพธ์ Checkpoints, Graphs และ Weights จากการ Train
+├── weights/                   # ไฟล์ Custom Named Weights (.pt)
 ├── core/
-│   ├── __init__.py
 │   ├── cvat_client.py         # เชื่อมต่อ CVAT, กรอง Task, ดาวน์โหลด, Unzip & จัดการลบ /images/default
-│   ├── merger.py              # รวม COCO JSON และรูปภาพ, ป้องกันชื่อไฟล์ซ้ำ
+│   ├── merger.py              # รวม COCO JSON และรูปภาพ, ป้องกันชื่อไฟล์ซ้ำด้วย MD5
 │   ├── converter.py           # แปลง COCO 1.0 เป็น YOLO (Detect / Segment)
 │   ├── splitter.py            # แบ่ง Train/Val/Test (รวมทุกรูปทั้ง labeled และ background)
 │   └── trainer.py             # YOLO Training engine, Auto-tuning, Patience, Run versioning
 └── ui/
-    ├── __init__.py
     ├── svg_icons.py           # คลังไอคอน SVG เวกเตอร์แท้ สไตล์ Mindfulness & Pastel Wellness
     ├── dancing_svg.py         # SVG Mascot ดิ้นได้ & Animated Activity Pills
     ├── theme.py               # ธีม Mindfulness & Pastel Wellness สบายตา
-    └── main_window.py         # หน้าต่างหลัก รวม 5 แท็บการทำงานอย่างเป็นระบบ
+    └── main_window.py         # หน้าต่างหลัก รวม 5 แท็บการทำงานแบบ Standalone
 ```
 
 ---
@@ -100,48 +110,44 @@ python app.py
 
 ## 📖 คู่มือการใช้งานทีละขั้นตอน (Step-by-Step Workflow)
 
-### ขั้นตอนที่ 1: ดาวน์โหลดจาก CVAT (`🌐 1. CVAT Connect & Download`)
-1. กรอก URL (ค่าเริ่มต้นคือ `http://1.10.131.222:8080/projects`)
-2. ใส่ **Username** และ **Password** ของ CVAT
-3. กด **"🔑 Connect & Fetch Tasks"**
-4. สามารถเลือกฟิลเตอร์:
-   - **Project**: เลือกเฉพาะ Project ที่ต้องการ
-   - **Stage**: กรองตาม `acceptance`, `annotation`, หรือ `validation`
-   - **State**: กรองตาม `completed`, `in progress`, `new`, หรือ `rejected`
-   - หรือค้นหาชื่อ Task และติ๊ก Checkbox เลือกเองได้อิสระ
-5. เลือกโฟลเดอร์ปลายทาง (ค่าเริ่มต้น `C:\Articulus\cvat\downloads`)
-6. กด **"⬇️ Download & Auto-Extract Tasks (COCO 1.0)"**
-   - โปรแกรมจะดาวน์โหลดไฟล์ Zip
-   - แตกไฟล์ Zip อัตโนมัติ
-   - ย้ายรูปทั้งหมดจาก `images/default/*` มาไว้ใน `images/*`
+### 1. ดาวน์โหลดจาก CVAT (`1. CVAT Downloader`)
+1. กรอก **CVAT Server URL** (ช่องเริ่มต้นว่างไว้ ปลอดภัย ไม่ล็อค URL)
+2. ใส่ **Username** และ **Password** แล้วกด **"Connect & Fetch"**
+3. กรอง Tasks ด้วย Project, Stage (`acceptance`), State (`completed`), หรือค้นหาชื่อ Task
+4. ติ๊กเลือก Tasks ที่ต้องการดาวน์โหลด
+5. โฟลเดอร์ปลายทางจะตั้งค่าอัตโนมัติไปที่ `C:\Articulus\cvat\data\raw_tasks`
+6. กด **"Download & Auto-Extract Tasks (COCO 1.0)"**
+   - โปรแกรมแตกไฟล์ Zip อัตโนมัติ
+   - ย้ายรูปออกจาก `images/default/*` มาไว้ใน `images/*`
    - ลบโฟลเดอร์ `default` ทิ้งอย่างสะอาดหมดจด
 
-### ขั้นตอนที่ 2: รวมไฟล์และแปลงฟอร์แมต (`🔄 2. Merge & Convert`)
-1. ตรวจสอบโฟลเดอร์ Tasks ที่ดาวน์โหลดมา
-2. กด **"🧩 Merge Datasets"** เพื่อรวมทุก Task เข้าด้วยกัน (แก้ปัญหา Category และชื่อภาพซ้ำให้อัตโนมัติ)
-3. เลือกโหมด YOLO:
-   - **🎯 Detection**: โปรแกรมจะแปลง Segmentation Polygon หรือ Bounding Box ให้อยู่ในรูป Bounding Box กล่องสี่เหลี่ยมแบบ normalized (`cls xc yc w h`)
-   - **🔷 Segmentation**: รักษาเส้นขอบ Polygon แบบ normalized (`cls x1 y1 x2 y2 ...`)
-4. กด **"⚡ Convert COCO to YOLO (.txt)"**
+### 2. รวม Dataset (`2. Merge Datasets`)
+1. โฟลเดอร์ต้นทางชี้ไปที่ `data/raw_tasks` และปลายทางชี้ไปที่ `data/`
+2. กด **"Merge Datasets"** เพื่อรวมทุก Task เข้าด้วยกัน
+   - ระบบแก้ปัญหาชื่อไฟล์ซ้ำด้วย MD5 hash อัตโนมัติ
+   - รวมรูปภาพไว้ใน `data/images/` และ Annotations ไว้ใน `data/annotations/instances_default.json`
 
-### ขั้นตอนที่ 3: แบ่ง Dataset Train / Val / Test (`✂️ 3. Dataset Splitter`)
-1. ปรับแถบเลื่อนสัดส่วน Train, Val, Test (เช่น 70% / 20% / 10%)
-2. ตัวเลือก **"Include ALL images in dataset"** จะเปิดอยู่เสมอ เพื่อนำทุกรูปเข้าร่วม (รูปที่ไม่มี Label จะมีไฟล์ `.txt` ว่างสำหรับ Negative Background Training)
-3. กด **"📦 Split Dataset & Generate data.yaml"**
+### 3. แปลงเป็นฟอร์แมต YOLO (`3. COCO to YOLO`)
+1. ไฟล์ COCO JSON ชี้ไปที่ `data/annotations/instances_default.json`
+2. เลือกโหมด:
+   - **Detection**: แปลง Polygon เป็น Bounding Box แบบ normalized (`cls xc yc w h`)
+   - **Segmentation**: รักษาพิกัด Polygon ละเอียด (`cls x1 y1 x2 y2 ...`)
+3. โฟลเดอร์ปลายทางชี้ไปที่ `data/labels/`
+4. กด **"Convert COCO to YOLO (.txt)"**
 
-### ขั้นตอนที่ 4: Train โมเดล YOLO (`🧠 4. YOLO Auto-Trainer`)
+### 4. แบ่งสัดส่วน Train / Val / Test (`4. Dataset Splitter`)
+1. โฟลเดอร์ Images และ Labels ชี้ไปที่ `data/images` และ `data/labels`
+2. ปรับสัดส่วน Train, Val, Test (เช่น 70% / 20% / 10%)
+3. รูปภาพทั้งหมด 100% จะถูกนำมาใช้งาน (รูปที่ไม่มี Label จะมีไฟล์ `.txt` ว่างสำหรับ Background Training)
+4. กด **"Split Dataset & Generate data.yaml"** (สร้างไฟล์ `data/data.yaml` อัตโนมัติ)
+
+### 5. เทรนโมเดล YOLO (`5. YOLO Auto-Trainer & Explorer`)
 1. เลือก Task: `detect` หรือ `segment`
 2. เลือกรุ่นโมเดล: `yolo11n.pt`, `yolov8n.pt`, `yolo26n.pt` หรือ Custom `.pt`
-3. กดปุ่ม **"⚡ Auto-Tune Hyperparameters for Dataset"** เพื่อให้โปรแกรมคำนวณ Epochs, Batch, Patience, LR ที่เหมาะสมกับขนาด Dataset ให้โดยอัตโนมัติ
-4. ปรับแก้ค่า Hyperparameters ตามความต้องการ:
-   - **Early Stop (Patience)**: กำหนดจำนวน Epochs ที่ไม่มีการพัฒนาแล้วจะหยุด Train ทันที
-5. ตั้งชื่อโฟลเดอร์ที่ช่อง **"Custom Run Name"** (เช่น `inspection_model`)
-   - โปรแกรมจะสร้างโฟลเดอร์ `runs/detect/inspection_model_v1` (หรือ `_v2`, `_v3` หากชื่อซ้ำ)
-   - ไฟล์ Weights ที่ดีที่สุดจะถูกคัดลอกเป็น `runs/detect/inspection_model_v1/weights/inspection_model.pt`
-6. กดปุ่ม **"🚀 Start YOLO Training"**
-   - ดูความคืบหน้า Epoch, Loss, Best Fitness, และ Live Terminal Logs ได้แบบ Realtime
-   - สามารถกดปุ่ม **"⏹️ Stop Training"** เพื่อหยุดกระบวนการได้ตลอดเวลา
-
-### ขั้นตอนที่ 5: สำรวจผลลัพธ์ (`📂 5. Runs & Explorer`)
-- กดปุ่มเปิดโฟลเดอร์ต่างๆ ใน Windows File Explorer ได้ทันที
-- ดูไฟล์คอนฟิก `data.yaml` และ Weights ที่บันทึกไว้
+3. ไฟล์ `data.yaml` ชี้ไปที่ `data/data.yaml`
+4. กด **"Auto-Tune Hyperparameters for Dataset"** เพื่อให้ระบบคำนวณ Epochs, Batch, Patience อัตโนมัติ
+5. ตั้งชื่อใน **"Custom Run Name"** (เช่น `my_yolo_model`)
+6. กด **"Start YOLO Training"**
+   - ดู Epoch, Loss, mAP และ Live Terminal Logs แบบ Realtime
+   - ไฟล์ Weights ที่ดีที่สุดจะถูกคัดลอกเป็น `weights/my_yolo_model.pt`
+7. สามารถกด **"Open data/ Folder"** หรือ **"Open runs/ Folder"** เพื่อเปิดดูไฟล์ผลลัพธ์ใน Windows ได้ทันที
