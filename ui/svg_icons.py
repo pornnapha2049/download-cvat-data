@@ -1,432 +1,175 @@
 """
-SVG Icon Library for CVAT to YOLO Studio.
-Inspired by the modern mindfulness / wellness pastel study aesthetic:
-https://i.pinimg.com/1200x/69/a3/a3/69a3a365c2017d08d2c1ce4795633dd5.jpg
+SVG icon library for CVAT to YOLO Studio — "Blob Duotone" style, tuned for the Navy Enterprise theme.
 
-Features:
-- Clean outline curves (stroke #1e293b / #233240, stroke-linecap="round", stroke-linejoin="round")
-- Soft pastel fills (sage mint #daf0dd, lavender rose #fde4ed, butter yellow #fef3d1, periwinkle #e0e8f8, lilac #eee3fc)
-- Icons modeled after the reference pin: Lotus bowl, Zen stones, Mind detox brain, Gratitude sunburst, Sleek chevron arrows, Notification bell, Bar charts.
-- High-resolution SVG rendering to QIcon and QPixmap with in-memory caching.
+Style rules
+- No outlines. Each icon sits on a soft organic blob in the light tone of its hue,
+  shapes use the mid tone (+ a 20% deep overlay), details/lines use the deep tone.
+- Blue/navy for most icons; colour only where it carries meaning:
+  green = run / ok, rose = stop / leave, amber = folders / warnings, lilac = AI / magic.
+- Small sizes (<= 18 px) drop the blob so the glyph stays crisp on buttons.
+- inverse=True gives a white version for dark (navy / red) buttons.
+
+API (unchanged): get_svg_icon(name, size), get_svg_pixmap(name, w, h), get_svg_raw(name)
+New: inverse= flag, icon_name_for(icon) to find which icon a QIcon was built from.
 """
 
 from PyQt5 import QtSvg
 from PyQt5.QtGui import QIcon, QPixmap, QPainter
-from PyQt5.QtCore import QByteArray, Qt, QSize
+from PyQt5.QtCore import QByteArray, Qt, QRectF
 
+SMALL_ICON_PX = 18   # at or below this size the background blob is dropped
 
-# =====================================================================
-# SVG Vector Definitions (24x24 and 32x32 viewports)
-# =====================================================================
+# fmt: off
+HUES = {
+    "navy":  ("#e5ebf3", "#9fb6d4", "#1f3a5f"),
+    "sky":   ("#e3f0f7", "#9cc9df", "#1d5c78"),
+    "sage":  ("#e3f1e6", "#a5d3b0", "#2f6b3d"),
+    "rose":  ("#fbe6ea", "#f0a9b6", "#b03548"),
+    "amber": ("#fbf1d9", "#f1cf7d", "#8a5a08"),
+    "lilac": ("#ece8f8", "#bdb2e6", "#4a3c8c"),
+}
 
-SVG_DEFS = {
-    # -----------------------------------------------------------------
-    # Reference Pin Highlights: Lotus, Zen Stones, Brain, Sparkle, Bell
-    # -----------------------------------------------------------------
-    "lotus": """
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
-        <!-- Bowl -->
-        <path d="M 6 19 C 6 26, 26 26, 26 19 Z" fill="#ffd5be" stroke="#233240" stroke-width="1.8" stroke-linejoin="round"/>
-        <!-- Water line -->
-        <path d="M 7 19 Q 16 20 25 19" stroke="#68b4d8" stroke-width="1.5" stroke-linecap="round"/>
-        <!-- Center Lotus Petal -->
-        <path d="M 16 9 C 12 13, 13 18, 16 19 C 19 18, 20 13, 16 9 Z" fill="#fca5a5" stroke="#233240" stroke-width="1.6" stroke-linejoin="round"/>
-        <!-- Left Petal -->
-        <path d="M 16 19 C 11 18, 8 13, 10 11 C 12 11, 14 15, 16 19 Z" fill="#fbcfe8" stroke="#233240" stroke-width="1.6" stroke-linejoin="round"/>
-        <!-- Right Petal -->
-        <path d="M 16 19 C 21 18, 24 13, 22 11 C 20 11, 18 15, 16 19 Z" fill="#fbcfe8" stroke="#233240" stroke-width="1.6" stroke-linejoin="round"/>
-    </svg>
-    """,
+BLOB = ("M12 1.8 C17.6 1.4 22.6 5.4 22.2 11.6 C21.8 17.6 17.8 22.4 11.6 22.2 "
+        "C5.6 22 1.6 17.6 1.8 11.8 C2 6 6.4 2.2 12 1.8 Z")
 
-    "zen_stones": """
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
-        <!-- Bottom Large Stone -->
-        <ellipse cx="16" cy="24" rx="11" ry="5.5" fill="#475569" stroke="#1e293b" stroke-width="1.8"/>
-        <ellipse cx="16" cy="23" rx="9" ry="3.5" fill="#64748b" opacity="0.6"/>
-        <!-- Middle Stone -->
-        <ellipse cx="16" cy="16" rx="8" ry="4.5" fill="#64748b" stroke="#1e293b" stroke-width="1.8"/>
-        <ellipse cx="16" cy="15" rx="6.5" ry="3" fill="#94a3b8" opacity="0.6"/>
-        <!-- Top Small Stone -->
-        <ellipse cx="16" cy="9.5" rx="5" ry="3.5" fill="#94a3b8" stroke="#1e293b" stroke-width="1.8"/>
-        <ellipse cx="16" cy="9" rx="3.5" ry="2" fill="#cbd5e1" opacity="0.7"/>
-    </svg>
-    """,
-
-    "brain": """
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
-        <!-- Background Soft Purple Pill -->
-        <rect x="2" y="2" width="28" height="28" rx="8" fill="#eee3fc" stroke="#dfcbf9" stroke-width="1.2"/>
-        <!-- Left Hemisphere -->
-        <path d="M 15 8 C 12 8, 9 10, 9 13 C 7 14, 7 17, 8 19 C 7 21, 8 23, 10 24 C 12 25, 14 24, 15 23" fill="#c084fc" stroke="#233240" stroke-width="1.6" stroke-linecap="round"/>
-        <!-- Right Hemisphere -->
-        <path d="M 17 8 C 20 8, 23 10, 23 13 C 25 14, 25 17, 24 19 C 25 21, 24 23, 22 24 C 20 25, 18 24, 17 23" fill="#c084fc" stroke="#233240" stroke-width="1.6" stroke-linecap="round"/>
-        <!-- Center Divider & Folds -->
-        <path d="M 16 8 L 16 23" stroke="#233240" stroke-width="1.6" stroke-linecap="round"/>
-        <path d="M 11 14 Q 14 15 15 13" stroke="#233240" stroke-width="1.4" fill="none" stroke-linecap="round"/>
-        <path d="M 21 14 Q 18 15 17 13" stroke="#233240" stroke-width="1.4" fill="none" stroke-linecap="round"/>
-        <path d="M 10 19 Q 13 18 15 20" stroke="#233240" stroke-width="1.4" fill="none" stroke-linecap="round"/>
-        <path d="M 22 19 Q 19 18 17 20" stroke="#233240" stroke-width="1.4" fill="none" stroke-linecap="round"/>
-    </svg>
-    """,
-
-    "sparkle": """
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
-        <rect x="2" y="2" width="28" height="28" rx="8" fill="#e0e8f8" stroke="#cbd9f4" stroke-width="1.2"/>
-        <!-- 8-point Sunburst / Star -->
-        <path d="M 16 6 L 16 26 M 6 16 L 26 16 M 9 9 L 23 23 M 23 9 L 9 23" stroke="#1d4ed8" stroke-width="2.2" stroke-linecap="round"/>
-        <circle cx="16" cy="16" r="3.5" fill="#fef08a" stroke="#1e293b" stroke-width="1.5"/>
-    </svg>
-    """,
-
-    "bell": """
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
-        <!-- Bell Body -->
-        <path d="M 16 7 C 12 7, 10 10, 10 15 C 10 19, 8 21, 7 22 L 25 22 C 24 21, 22 19, 22 15 C 22 10, 20 7, 16 7 Z" fill="#fef3d1" stroke="#233240" stroke-width="1.8" stroke-linejoin="round"/>
-        <path d="M 14 25 C 14 26.5, 15 27, 16 27 C 17 26.5, 18 26.5, 18 25" stroke="#233240" stroke-width="1.8" stroke-linecap="round"/>
-        <circle cx="16" cy="5.5" r="1.5" fill="#233240"/>
-        <!-- Pink Alert Badge Dot -->
-        <circle cx="23" cy="8" r="3.5" fill="#f43f5e" stroke="#ffffff" stroke-width="1.5"/>
-    </svg>
-    """,
-
-    "sprout": """
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
-        <rect x="2" y="2" width="28" height="28" rx="8" fill="#daf0dd" stroke="#c4e7c7" stroke-width="1.2"/>
-        <!-- 3 Clover Leaves / Sprigs -->
-        <path d="M 16 22 L 16 14" stroke="#233240" stroke-width="2" stroke-linecap="round"/>
-        <path d="M 16 14 C 13 9, 8 12, 12 16 C 14 16, 16 14, 16 14 Z" fill="#4ade80" stroke="#233240" stroke-width="1.6"/>
-        <path d="M 16 14 C 19 9, 24 12, 20 16 C 18 16, 16 14, 16 14 Z" fill="#4ade80" stroke="#233240" stroke-width="1.6"/>
-        <path d="M 16 14 C 16 8, 11 6, 16 6 C 21 6, 16 8, 16 14 Z" fill="#86efac" stroke="#233240" stroke-width="1.6"/>
-    </svg>
-    """,
-
-    # -----------------------------------------------------------------
-    # Stepper Workflow Icons (Step 1 -> 5)
-    # -----------------------------------------------------------------
-    "step_cvat": """
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 28 28" width="28" height="28">
-        <!-- Cloud and Download Tray -->
-        <path d="M 6 15 C 4 15, 3 13, 4 11 C 5 9, 7 9, 8 9 C 9 6, 14 5, 17 8 C 19 7, 22 8, 22 11 C 24 12, 24 15, 22 15 Z" fill="#daf0dd" stroke="#233240" stroke-width="1.7" stroke-linejoin="round"/>
-        <!-- Arrow down -->
-        <path d="M 14 12 L 14 20 M 11 17 L 14 20 L 17 17" stroke="#166534" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-        <!-- Tray line -->
-        <path d="M 8 23 L 20 23" stroke="#233240" stroke-width="2" stroke-linecap="round"/>
-    </svg>
-    """,
-
-    "step_merge": """
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 28 28" width="28" height="28">
-        <!-- Two flowing branches merging together -->
-        <circle cx="8" cy="7" r="3" fill="#fef3d1" stroke="#233240" stroke-width="1.7"/>
-        <circle cx="8" cy="21" r="3" fill="#fef3d1" stroke="#233240" stroke-width="1.7"/>
-        <circle cx="21" cy="14" r="3.5" fill="#fde68a" stroke="#233240" stroke-width="1.7"/>
-        <path d="M 11 7 C 15 7, 16 13, 17.5 14" stroke="#d97706" stroke-width="2" fill="none" stroke-linecap="round"/>
-        <path d="M 11 21 C 15 21, 16 15, 17.5 14" stroke="#d97706" stroke-width="2" fill="none" stroke-linecap="round"/>
-    </svg>
-    """,
-
-    "step_convert": """
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 28 28" width="28" height="28">
-        <!-- Magic wand / lightning spark with pastel rose accents -->
-        <path d="M 5 23 L 17 11" stroke="#233240" stroke-width="2.2" stroke-linecap="round"/>
-        <!-- Wand tip glow -->
-        <circle cx="18" cy="10" r="4" fill="#fde4ed" stroke="#f43f5e" stroke-width="1.5"/>
-        <!-- Magic stars -->
-        <path d="M 21 4 L 21 8 M 19 6 L 23 6" stroke="#e11d48" stroke-width="1.8" stroke-linecap="round"/>
-        <path d="M 11 4 L 11 6 M 10 5 L 12 5" stroke="#f43f5e" stroke-width="1.5" stroke-linecap="round"/>
-        <path d="M 23 15 L 23 17 M 22 16 L 24 16" stroke="#f43f5e" stroke-width="1.5" stroke-linecap="round"/>
-    </svg>
-    """,
-
-    "step_split": """
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 28 28" width="28" height="28">
-        <!-- 3 Partition cards (Train, Val, Test) -->
-        <rect x="4" y="6" width="6" height="16" rx="2.5" fill="#bfdbfe" stroke="#1e3a8a" stroke-width="1.6"/>
-        <rect x="12" y="9" width="5.5" height="13" rx="2.5" fill="#c7d2fe" stroke="#3730a3" stroke-width="1.6"/>
-        <rect x="19.5" y="12" width="5" height="10" rx="2" fill="#ddd6fe" stroke="#5b21b6" stroke-width="1.6"/>
-        <path d="M 7 10 L 7 14" stroke="#1e3a8a" stroke-width="1.5" stroke-linecap="round"/>
-    </svg>
-    """,
-
-    "step_train": """
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 28 28" width="28" height="28">
-        <!-- Rocket Body -->
-        <path d="M 14 4 C 18 8, 20 13, 19 18 L 9 18 C 8 13, 10 8, 14 4 Z" fill="#ffd5be" stroke="#233240" stroke-width="1.8" stroke-linejoin="round"/>
-        <!-- Window -->
-        <circle cx="14" cy="12" r="2.5" fill="#67e8f9" stroke="#233240" stroke-width="1.5"/>
-        <!-- Wings -->
-        <path d="M 9 16 L 5 19 L 9 19 Z" fill="#f87171" stroke="#233240" stroke-width="1.5"/>
-        <path d="M 19 16 L 23 19 L 19 19 Z" fill="#f87171" stroke="#233240" stroke-width="1.5"/>
-        <!-- Flame -->
-        <path d="M 11 19 Q 14 25 14 25 Q 14 25 17 19" fill="#facc15" stroke="#ea580c" stroke-width="1.6"/>
-    </svg>
-    """,
-
-    "step_runs": """
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 28 28" width="28" height="28">
-        <!-- Folder with Weights Star badge -->
-        <path d="M 4 8 C 4 6.5, 5 6, 6.5 6 L 11 6 L 13 8.5 L 22 8.5 C 23.5 8.5, 24 9.5, 24 11 L 24 20 C 24 21.5, 23 22, 21.5 22 L 6.5 22 C 5 22, 4 21, 4 20 Z" fill="#fef3d1" stroke="#233240" stroke-width="1.7"/>
-        <path d="M 4 11.5 L 24 11.5" stroke="#233240" stroke-width="1.5"/>
-        <!-- Cute Checkmark badge -->
-        <circle cx="14" cy="16.5" r="3.5" fill="#4ade80" stroke="#166534" stroke-width="1.2"/>
-        <path d="M 12.5 16.5 L 13.5 17.5 L 15.5 15.5" stroke="#ffffff" stroke-width="1.4" fill="none" stroke-linecap="round"/>
-    </svg>
-    """,
-
-    # -----------------------------------------------------------------
-    # Navigation Arrows (Pinterest Circular Pill Style)
-    # -----------------------------------------------------------------
-    "arrow_left": """
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
-        <circle cx="12" cy="12" r="10" fill="#ffffff" stroke="#233240" stroke-width="1.6"/>
-        <path d="M 14 8 L 10 12 L 14 16" stroke="#233240" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
-    </svg>
-    """,
-
-    "arrow_right": """
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
-        <circle cx="12" cy="12" r="10" fill="#ffffff" stroke="#233240" stroke-width="1.6"/>
-        <path d="M 10 8 L 14 12 L 10 16" stroke="#233240" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
-    </svg>
-    """,
-
-    # -----------------------------------------------------------------
-    # Action Icons: Play, Stop, Refresh, Search, Download, Folder, Key
-    # -----------------------------------------------------------------
-    "play": """
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
-        <circle cx="12" cy="12" r="10" fill="#daf0dd" stroke="#233240" stroke-width="1.6"/>
-        <polygon points="10,8 16,12 10,16" fill="#166534" stroke="#166534" stroke-width="1.2" stroke-linejoin="round"/>
-    </svg>
-    """,
-
-    "stop": """
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
-        <circle cx="12" cy="12" r="10" fill="#fee2e2" stroke="#233240" stroke-width="1.6"/>
-        <rect x="9" y="9" width="6" height="6" rx="1.5" fill="#dc2626" stroke="#b91c1c" stroke-width="1"/>
-    </svg>
-    """,
-
-    "refresh": """
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
-        <path d="M 19 12 A 7 7 0 1 1 17 7 L 19 5 M 19 5 L 19 9 L 15 9" stroke="#233240" stroke-width="1.9" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
-    </svg>
-    """,
-
-    "search": """
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
-        <circle cx="11" cy="11" r="6.5" fill="#f0fdf4" stroke="#233240" stroke-width="1.8"/>
-        <!-- Lens highlight -->
-        <path d="M 8 9 A 4 4 0 0 1 13 8" stroke="#86efac" stroke-width="1.4" fill="none" stroke-linecap="round"/>
-        <path d="M 16 16 L 21 21" stroke="#233240" stroke-width="2.2" stroke-linecap="round"/>
-    </svg>
-    """,
-
-    "download": """
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
-        <path d="M 12 4 L 12 15 M 8 11 L 12 15 L 16 11" stroke="#166534" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-        <path d="M 5 18 C 5 19.5, 6 20, 7.5 20 L 16.5 20 C 18 20, 19 19.5, 19 18" stroke="#233240" stroke-width="1.8" fill="none" stroke-linecap="round"/>
-    </svg>
-    """,
-
-    "folder": """
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
-        <path d="M 3 6 C 3 4.5, 4 4, 5.5 4 L 9.5 4 L 11.5 6.5 L 19.5 6.5 C 21 6.5, 21.5 7.5, 21.5 9 L 21.5 18 C 21.5 19.5, 20.5 20, 19 20 L 5.5 20 C 4 20, 3 19, 3 18 Z" fill="#fef3d1" stroke="#233240" stroke-width="1.7"/>
-        <path d="M 3 9.5 L 21.5 9.5" stroke="#233240" stroke-width="1.5"/>
-    </svg>
-    """,
-
-    "key": """
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
-        <circle cx="8" cy="12" r="5" fill="#fef08a" stroke="#233240" stroke-width="1.8"/>
-        <circle cx="8" cy="12" r="2" fill="#ffffff" stroke="#233240" stroke-width="1.3"/>
-        <path d="M 13 12 L 21 12 M 17 12 L 17 15 M 20 12 L 20 15" stroke="#233240" stroke-width="1.8" stroke-linecap="round"/>
-    </svg>
-    """,
-
-    "logout": """
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
-        <!-- Door Frame -->
-        <path d="M 10 4 L 4 4 C 3 4, 2.5 4.5, 2.5 6 L 2.5 18 C 2.5 19.5, 3 20, 4 20 L 10 20" stroke="#233240" stroke-width="1.8" fill="none" stroke-linecap="round"/>
-        <!-- Arrow out -->
-        <path d="M 15 8 L 19 12 L 15 16 M 19 12 L 8 12" stroke="#e11d48" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
-    </svg>
-    """,
-
-    "user": """
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
-        <circle cx="12" cy="8" r="4.5" fill="#bfdbfe" stroke="#1e293b" stroke-width="1.7"/>
-        <path d="M 4 20 C 4 16, 7.5 15, 12 15 C 16.5 15, 20 16, 20 20" fill="#e0e8f8" stroke="#1e293b" stroke-width="1.7" stroke-linecap="round"/>
-    </svg>
-    """,
-
-    "server": """
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
-        <!-- Top Disk -->
-        <ellipse cx="12" cy="7" rx="8" ry="3.5" fill="#e2e8f0" stroke="#233240" stroke-width="1.7"/>
-        <path d="M 4 7 L 4 12 C 4 14, 20 14, 20 12 L 20 7" fill="#f1f5f9" stroke="#233240" stroke-width="1.7"/>
-        <!-- Bottom Disk -->
-        <path d="M 4 12 L 4 17 C 4 19, 20 19, 20 17 L 20 12" fill="#f1f5f9" stroke="#233240" stroke-width="1.7"/>
-        <!-- Green indicator light -->
-        <circle cx="17" cy="15" r="1.5" fill="#22c55e"/>
-    </svg>
-    """,
-
-    "check": """
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
-        <circle cx="12" cy="12" r="10" fill="#daf0dd" stroke="#233240" stroke-width="1.6"/>
-        <path d="M 8 12 L 11 15 L 16 9" stroke="#166534" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
-    </svg>
-    """,
-
-    "warning": """
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
-        <circle cx="12" cy="12" r="10" fill="#fef3d1" stroke="#233240" stroke-width="1.6"/>
-        <path d="M 12 7 L 12 13" stroke="#b45309" stroke-width="2" stroke-linecap="round"/>
-        <circle cx="12" cy="16.5" r="1.2" fill="#b45309"/>
-    </svg>
-    """,
-
-    # -----------------------------------------------------------------
-    # Metrics & Analytics Icons (Bar Chart, Target, Clock, BBox, Polygon)
-    # -----------------------------------------------------------------
-    "chart": """
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
-        <!-- Rounded vertical bars like Pinterest sleep/stress indicator -->
-        <rect x="3" y="14" width="3" height="7" rx="1.5" fill="#c084fc"/>
-        <rect x="7.5" y="10" width="3" height="11" rx="1.5" fill="#a855f7"/>
-        <rect x="12" y="5" width="3" height="16" rx="1.5" fill="#60a5fa"/>
-        <rect x="16.5" y="8" width="3" height="13" rx="1.5" fill="#3b82f6"/>
-        <rect x="21" y="12" width="2" height="9" rx="1" fill="#93c5fd"/>
-    </svg>
-    """,
-
-    "target": """
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
-        <circle cx="12" cy="12" r="9.5" fill="#fef2f2" stroke="#233240" stroke-width="1.7"/>
-        <circle cx="12" cy="12" r="6" fill="#fecaca" stroke="#233240" stroke-width="1.5"/>
-        <circle cx="12" cy="12" r="2.5" fill="#ef4444"/>
-    </svg>
-    """,
-
-    "clock": """
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
-        <circle cx="12" cy="12" r="9.5" fill="#f0f9ff" stroke="#233240" stroke-width="1.7"/>
-        <path d="M 12 7 L 12 12 L 15.5 14" stroke="#0284c7" stroke-width="2" stroke-linecap="round"/>
-    </svg>
-    """,
-
-    "box": """
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
-        <rect x="4" y="4" width="16" height="16" rx="3" fill="#e0e8f8" stroke="#1d4ed8" stroke-width="1.8" stroke-dasharray="3 2"/>
-        <circle cx="4" cy="4" r="2" fill="#1d4ed8"/>
-        <circle cx="20" cy="4" r="2" fill="#1d4ed8"/>
-        <circle cx="4" cy="20" r="2" fill="#1d4ed8"/>
-        <circle cx="20" cy="20" r="2" fill="#1d4ed8"/>
-    </svg>
-    """,
-
-    "polygon": """
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
-        <polygon points="12,3 21,9 18,20 6,20 3,9" fill="#fde4ed" stroke="#e11d48" stroke-width="1.8"/>
-        <circle cx="12" cy="3" r="2" fill="#e11d48"/>
-        <circle cx="21" cy="9" r="2" fill="#e11d48"/>
-        <circle cx="18" cy="20" r="2" fill="#e11d48"/>
-        <circle cx="6" cy="20" r="2" fill="#e11d48"/>
-        <circle cx="3" cy="9" r="2" fill="#e11d48"/>
-    </svg>
-    """,
-
-    "filter": """
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
-        <path d="M 4 6 L 20 6 M 7 12 L 17 12 M 10 18 L 14 18" stroke="#233240" stroke-width="2" stroke-linecap="round"/>
-    </svg>
-    """,
-
-    "hardware": """
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
-        <rect x="5" y="5" width="14" height="14" rx="3" fill="#ecfdf5" stroke="#059669" stroke-width="1.7"/>
-        <rect x="9" y="9" width="6" height="6" rx="1.5" fill="#10b981"/>
-        <path d="M 9 2 L 9 5 M 15 2 L 15 5 M 9 19 L 9 22 M 15 19 L 15 22 M 2 9 L 5 9 M 2 15 L 5 15 M 19 9 L 22 9 M 19 15 L 22 15" stroke="#059669" stroke-width="1.5" stroke-linecap="round"/>
-    </svg>
-    """,
-
-    "image": """
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
-        <rect x="3" y="4" width="18" height="16" rx="3" fill="#eff6ff" stroke="#2563eb" stroke-width="1.8"/>
-        <circle cx="8" cy="8.5" r="1.5" fill="#f59e0b"/>
-        <path d="M 3 17 L 9 12 L 14 16 L 17 13 L 21 17" fill="none" stroke="#2563eb" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
-    </svg>
-    """,
-
-    "video": """
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
-        <rect x="3" y="5" width="13" height="14" rx="2.5" fill="#fdf2f8" stroke="#db2777" stroke-width="1.8"/>
-        <polygon points="16,10 21,7 21,17 16,14" fill="#f472b6" stroke="#db2777" stroke-width="1.6" stroke-linejoin="round"/>
-        <circle cx="9.5" cy="12" r="2.5" fill="#db2777"/>
-    </svg>
-    """,
-
-    "eye": """
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
-        <path d="M 2 12 C 5 6, 19 6, 22 12 C 19 18, 5 18, 2 12 Z" fill="#f0fdf4" stroke="#16a34a" stroke-width="1.8" stroke-linejoin="round"/>
-        <circle cx="12" cy="12" r="3.5" fill="#22c55e" stroke="#15803d" stroke-width="1.5"/>
-        <circle cx="13" cy="11" r="1" fill="#ffffff"/>
-    </svg>
-    """,
-
-    "step_test": """
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
-        <circle cx="12" cy="12" r="9" fill="#fdf4ff" stroke="#a855f7" stroke-width="1.8"/>
-        <path d="M 12 7 L 12 12 L 15 15" stroke="#9333ea" stroke-width="1.8" stroke-linecap="round"/>
-        <circle cx="12" cy="12" r="2" fill="#a855f7"/>
-    </svg>
-    """
+# (hue, [(kind, role, *geometry)])   roles: shape (mid fill), shape2 (deep fill), line (deep stroke)
+ICONS = {
+    "folder": ("amber", [("path", "shape", "M3.8 7.4 C3.8 6.2 4.6 5.4 5.8 5.4 L9.2 5.4 L11 7.4 L18.2 7.4 C19.4 7.4 20.2 8.2 20.2 9.4 L20.2 16.8 C20.2 18 19.4 18.8 18.2 18.8 L5.8 18.8 C4.6 18.8 3.8 18 3.8 16.8 Z"),
+                         ("path", "line", "M3.8 10.4 L20.2 10.4")]),
+    "download": ("navy", [("path", "line", "M12 4.6 L12 14.6 M8.2 11 L12 14.8 L15.8 11"), ("path", "line", "M5 17 L5 18 C5 19 5.8 19.6 6.8 19.6 L17.2 19.6 C18.2 19.6 19 19 19 18 L19 17")]),
+    "refresh": ("navy", [("path", "line", "M18.4 12 A6.4 6.4 0 1 1 16.4 7.4 M16.8 4.4 L16.8 7.8 L13.4 7.8")]),
+    "play": ("sage", [("circle", "shape", 12, 12, 8.6),
+                      ("path", "shape2", "M10.2 8.6 C10.2 8 10.8 7.7 11.3 8 L15.6 11.2 C16.1 11.6 16.1 12.4 15.6 12.8 L11.3 16 C10.8 16.3 10.2 16 10.2 15.4 Z")]),
+    "stop": ("rose", [("circle", "shape", 12, 12, 8.6), ("rect", "shape2", 8.8, 8.8, 6.4, 6.4, 1.8)]),
+    "search": ("navy", [("circle", "shape", 10.6, 10.6, 6), ("path", "line", "M15.2 15.2 L19.6 19.6")]),
+    "check": ("sage", [("circle", "shape", 12, 12, 8.6), ("path", "line", "M8 12.2 L10.9 15 L16 9.4")]),
+    "warning": ("amber", [("path", "shape", "M12 4 L20.5 19 L3.5 19 Z"), ("path", "line", "M12 9.5 L12 13.4"), ("circle", "shape2", 12, 16.2, 1.2)]),
+    "bell": ("navy", [("path", "shape", "M12 4.4 C8.8 4.4 7.4 7 7.4 10.4 C7.4 13.4 6.2 15 5.4 15.8 L18.6 15.8 C17.8 15 16.6 13.4 16.6 10.4 C16.6 7 15.2 4.4 12 4.4 Z"),
+                      ("path", "line", "M10.2 18.4 C10.6 19.4 11.2 19.8 12 19.8 C12.8 19.8 13.4 19.4 13.8 18.4"),
+                      ("circle", "accent", 17.4, 5.6, 2.6)]),
+    "logout": ("rose", [("path", "line", "M10 4.5 L6 4.5 C5 4.5 4.5 5 4.5 6 L4.5 18 C4.5 19 5 19.5 6 19.5 L10 19.5"),
+                        ("path", "line", "M14.4 8 L18.4 12 L14.4 16 M18.4 12 L9 12")]),
+    "arrow_left": ("navy", [("path", "line", "M14.5 6.5 L9 12 L14.5 17.5")]),
+    "arrow_right": ("navy", [("path", "line", "M9.5 6.5 L15 12 L9.5 17.5")]),
+    "eye": ("navy", [("path", "shape", "M2.5 12 C5.4 6.6 18.6 6.6 21.5 12 C18.6 17.4 5.4 17.4 2.5 12 Z"), ("circle", "shape2", 12, 12, 3.4)]),
+    "eye_off": ("navy", [("path", "shape", "M2.5 12 C5.4 6.6 18.6 6.6 21.5 12 C18.6 17.4 5.4 17.4 2.5 12 Z"), ("circle", "shape2", 12, 12, 3.2),
+                         ("path", "line", "M4.5 4.5 L19.5 19.5")]),
+    "filter": ("navy", [("path", "line", "M4.5 7 L19.5 7 M7.5 12 L16.5 12 M10.5 17 L13.5 17")]),
+    "box": ("sky", [("rect", "shape", 5, 5, 14, 14, 3), ("circle", "shape2", 5, 5, 2), ("circle", "shape2", 19, 5, 2),
+                    ("circle", "shape2", 5, 19, 2), ("circle", "shape2", 19, 19, 2)]),
+    "polygon": ("rose", [("path", "shape", "M12 4 L19.6 9.4 L17 19 L7 19 L4.4 9.4 Z"), ("circle", "shape2", 12, 4, 1.9), ("circle", "shape2", 19.6, 9.4, 1.9),
+                         ("circle", "shape2", 17, 19, 1.9), ("circle", "shape2", 7, 19, 1.9), ("circle", "shape2", 4.4, 9.4, 1.9)]),
+    "brain": ("lilac", [("path", "shape", "M11.4 5.6 C8.4 5.6 6.8 7.4 6.8 9.4 C5.4 10.2 5.4 12.6 6.3 13.6 C5.8 15.6 7.2 18 9.6 18 C10.5 18 11.1 17.6 11.4 17.2 Z"),
+                        ("path", "shape", "M12.6 5.6 C15.6 5.6 17.2 7.4 17.2 9.4 C18.6 10.2 18.6 12.6 17.7 13.6 C18.2 15.6 16.8 18 14.4 18 C13.5 18 12.9 17.6 12.6 17.2 Z"),
+                        ("path", "line", "M8.6 10.6 Q10 11.2 10.6 10 M15.4 10.6 Q14 11.2 13.4 10")]),
+    "sparkle": ("lilac", [("path", "shape2", "M12 4.5 L13.7 10.3 L19.5 12 L13.7 13.7 L12 19.5 L10.3 13.7 L4.5 12 L10.3 10.3 Z")]),
+    "zen_stones": ("navy", [("path", "shape", "M4 18 C4 15.6 8 14.4 12 14.4 C16 14.4 20 15.6 20 18 C20 20.4 16 21.4 12 21.4 C8 21.4 4 20.4 4 18 Z"),
+                            ("path", "shape", "M6.6 12 C6.6 10.4 9.2 9.4 12 9.4 C14.8 9.4 17.4 10.4 17.4 12 C17.4 13.6 14.8 14.4 12 14.4 C9.2 14.4 6.6 13.6 6.6 12 Z"),
+                            ("circle", "shape2", 12, 6.6, 3)]),
+    "step_cvat": ("navy", [("path", "shape", "M6.6 15.6 C4.6 15.6 3.6 13.8 4.4 12.2 C5 11 6.2 10.6 7 10.8 C7.6 7.8 11.8 6.6 14.2 9 C16.4 8.2 18.8 9.8 18.6 12.2 C20.4 12.8 20 15.6 17.8 15.6 Z"),
+                           ("path", "line", "M12 11.6 L12 19.4 M9.4 17 L12 19.6 L14.6 17")]),
+    "step_merge": ("amber", [("path", "line", "M8.6 7 C12 7 12.4 12 15 12 M8.6 17 C12 17 12.4 12 15 12"),
+                             ("circle", "shape", 6.8, 7, 2.6), ("circle", "shape", 6.8, 17, 2.6), ("circle", "shape2", 17, 12, 3.2)]),
+    "step_convert": ("lilac", [("path", "line", "M5.6 18.4 L14 10"),
+                               ("path", "shape2", "M15.6 4.6 L16.5 7.5 L19.4 8.4 L16.5 9.3 L15.6 12.2 L14.7 9.3 L11.8 8.4 L14.7 7.5 Z")]),
+    "step_split": ("sky", [("rect", "shape2", 5, 7, 4, 12, 2), ("rect", "shape", 10.2, 9.5, 4, 9.5, 2), ("rect", "shape", 15.4, 12, 4, 7, 2)]),
+    "step_train": ("navy", [("path", "shape", "M12 3.6 C15.4 6.6 16.8 10.6 15.8 15 L8.2 15 C7.2 10.6 8.6 6.6 12 3.6 Z"),
+                            ("circle", "shape2", 12, 9.4, 1.9),
+                            ("path", "shape2", "M8.6 12.6 L5.8 15.8 L8.6 15.8 Z M15.4 12.6 L18.2 15.8 L15.4 15.8 Z M10.2 16.6 Q12 21 12 21 Q12 21 13.8 16.6")]),
+    "step_runs": ("sage", [("path", "shape", "M4.6 8.4 C4.6 7.4 5.2 6.8 6.2 6.8 L9.4 6.8 L11 8.6 L17.8 8.6 C18.8 8.6 19.4 9.2 19.4 10.2 L19.4 16.8 C19.4 17.8 18.8 18.4 17.8 18.4 L6.2 18.4 C5.2 18.4 4.6 17.8 4.6 16.8 Z"),
+                           ("path", "line", "M9.6 13.4 L11.4 15.2 L14.6 12")]),
+    "step_test": ("lilac", [("circle", "shape", 11, 11, 5.6), ("path", "line", "M15.2 15.2 L19 19 M8.6 11.2 L10.4 13 L13.4 9.8")]),
+    "image": ("sky", [("rect", "shape", 3.6, 4.6, 16.8, 14.8, 3.6), ("circle", "shape2", 8.4, 9, 1.7), ("path", "line", "M4 17 L9 12.4 L13 15.8 L15.8 13.2 L20 17")]),
+    "video": ("rose", [("rect", "shape", 3.5, 6, 12, 12, 3), ("path", "shape2", "M15.5 10.4 L20.5 7.6 L20.5 16.4 L15.5 13.6 Z")]),
+    "chart": ("navy", [("rect", "shape", 3.6, 12, 3.2, 8, 1.6), ("rect", "shape2", 8.2, 8, 3.2, 12, 1.6), ("rect", "shape", 12.8, 4.6, 3.2, 15.4, 1.6), ("rect", "shape2", 17.4, 9.6, 3.2, 10.4, 1.6)]),
 }
 
 
+def _el(kind, geo, attrs):
+    if kind == "path":
+        return f'<path d="{geo[0]}" {attrs}/>'
+    if kind == "circle":
+        return f'<circle cx="{geo[0]}" cy="{geo[1]}" r="{geo[2]}" {attrs}/>'
+    x, y, w, h, rx = geo
+    return f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="{rx}" {attrs}/>'
+
+
+# fmt: on
+
+
+def build_svg(name: str, inverse: bool = False, with_blob: bool = True) -> str:
+    """Builds the SVG markup for an icon. Unknown names fall back to 'sparkle'."""
+    hue, els = ICONS.get(name, ICONS["sparkle"])
+    light, mid, deep = HUES[hue]
+    if inverse:
+        light = mid = deep = "#ffffff"
+    out = []
+    if with_blob:
+        out.append(f'<path d="{BLOB}" fill="{light}" fill-opacity="{0.16 if inverse else 1}"/>')
+    for kind, role, *geo in els:
+        if role == "line":
+            out.append(_el(kind, geo, f'fill="none" stroke="{deep}" stroke-width="1.9" '
+                                      'stroke-linecap="round" stroke-linejoin="round"'))
+        elif role == "shape":
+            out.append(_el(kind, geo, f'fill="{mid}" fill-opacity="{0.55 if inverse else 1}"'))
+            if not inverse:
+                out.append(_el(kind, geo, f'fill="{deep}" fill-opacity="0.2"'))
+        elif role == "accent":
+            out.append(_el(kind, geo, 'fill="#e5486f" stroke="#ffffff" stroke-width="1.2"'))
+        else:  # shape2
+            out.append(_el(kind, geo, f'fill="{deep}"'))
+    return ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">'
+            + "".join(out) + "</svg>")
+
+
+# Raw SVG strings (default look) — kept for code that reads SVG_DEFS directly.
+SVG_DEFS = {name: build_svg(name) for name in ICONS}
+
 # =====================================================================
-# In-Memory Cache & SVG Render Helpers
+# Render helpers with caching
 # =====================================================================
-
-_PIXMAP_CACHE: dict[tuple[str, int, int], QPixmap] = {}
-_ICON_CACHE: dict[tuple[str, int], QIcon] = {}
-
-
-def get_svg_raw(name: str) -> str:
-    """Returns raw SVG string by icon key name."""
-    return SVG_DEFS.get(name, SVG_DEFS["sprout"]).strip()
+_PIXMAP_CACHE: dict[tuple, QPixmap] = {}
+_ICON_CACHE: dict[tuple, QIcon] = {}
+_ICON_NAMES: dict[int, tuple[str, int]] = {}   # QIcon.cacheKey() -> (name, size)
 
 
-def get_svg_pixmap(name: str, width: int = 24, height: int = 24) -> QPixmap:
-    """Renders named SVG icon to a high-DPI QPixmap with caching."""
-    cache_key = (name, width, height)
-    if cache_key in _PIXMAP_CACHE:
-        return _PIXMAP_CACHE[cache_key]
+def get_svg_raw(name: str, inverse: bool = False, with_blob: bool = True) -> str:
+    """Returns raw SVG markup for an icon."""
+    return build_svg(name, inverse=inverse, with_blob=with_blob)
 
-    svg_data = get_svg_raw(name)
-    pix = QPixmap(width, height)
+
+def get_svg_pixmap(name: str, width: int = 24, height: int = 24, inverse: bool = False) -> QPixmap:
+    """Renders an icon to a crisp (2x) QPixmap. Small sizes drop the blob background."""
+    with_blob = max(width, height) > SMALL_ICON_PX
+    key = (name, width, height, inverse, with_blob)
+    if key in _PIXMAP_CACHE:
+        return _PIXMAP_CACHE[key]
+
+    renderer = QtSvg.QSvgRenderer(QByteArray(build_svg(name, inverse, with_blob).encode("utf-8")))
+    pix = QPixmap(width * 2, height * 2)
     pix.fill(Qt.transparent)
-
     painter = QPainter(pix)
     painter.setRenderHint(QPainter.Antialiasing, True)
     painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
-
-    renderer = QtSvg.QSvgRenderer(QByteArray(svg_data.encode("utf-8")))
-    renderer.render(painter)
+    renderer.render(painter, QRectF(0, 0, width * 2, height * 2))
     painter.end()
+    pix.setDevicePixelRatio(2.0)
 
-    _PIXMAP_CACHE[cache_key] = pix
+    _PIXMAP_CACHE[key] = pix
     return pix
 
 
-def get_svg_icon(name: str, size: int = 22) -> QIcon:
-    """Returns a QIcon created from the SVG definition with caching."""
-    cache_key = (name, size)
-    if cache_key in _ICON_CACHE:
-        return _ICON_CACHE[cache_key]
-
-    pix = get_svg_pixmap(name, size, size)
-    icon = QIcon(pix)
-    _ICON_CACHE[cache_key] = icon
+def get_svg_icon(name: str, size: int = 22, inverse: bool = False) -> QIcon:
+    """Returns a cached QIcon. Use inverse=True on dark buttons."""
+    key = (name, size, inverse)
+    if key in _ICON_CACHE:
+        return _ICON_CACHE[key]
+    icon = QIcon(get_svg_pixmap(name, size, size, inverse))
+    _ICON_CACHE[key] = icon
+    _ICON_NAMES[icon.cacheKey()] = (name, size)
     return icon
+
+
+def icon_name_for(icon: QIcon):
+    """Returns (name, size) for a QIcon created by get_svg_icon, or None."""
+    return _ICON_NAMES.get(icon.cacheKey())

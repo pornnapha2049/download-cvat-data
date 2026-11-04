@@ -63,6 +63,18 @@ class CvatClientWrapper:
     def is_logged_in(self) -> bool:
         return self.client is not None and self.client.has_credentials()
 
+    def is_authenticated(self) -> bool:
+        """Alias for is_logged_in."""
+        return self.is_logged_in()
+
+    def connect(self, url: str, username: str, password: str) -> dict:
+        """Alias for login to support both connect and login naming conventions."""
+        return self.login(url, username, password)
+
+    def get_projects(self) -> list[dict]:
+        """Alias for refresh_projects."""
+        return self.refresh_projects()
+
     def login(self, url: str, username: str, password: str) -> dict:
         """
         Log in to CVAT server.

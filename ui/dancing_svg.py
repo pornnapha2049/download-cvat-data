@@ -1,307 +1,343 @@
 """
-Chubby Cat Animated SVG Mascot ("Mochi Cat" • แมวอ้วนน่ารักดุ้กดิ๊ก).
-Smooth 30-60 FPS dynamic SVG vector frames with wiggling fluffy tail,
-twitching cat ears, blushing chubby cheeks, tapping paws, and reactive animation states:
-IDLE, DOWNLOADING, PROCESSING, TRAINING, SUCCESS.
+Animated "Idea Bulb" cat mascot (sticker style) for the Navy Enterprise theme.
+
+Design
+- Bean-shaped head with chunky ears, flat navy silhouette, white facial features
+- Emote symbols drawn around the head like a sticker sheet (… dots, light bulb, ?, sweat, zZ …)
+
+States (public API kept from the old mascot, plus two new ones)
+- idle         : calm "thinking" face, three dots bob one after another
+- downloading / processing : looks up at an unlit bulb with a "?", bulb flickers
+- training     : determined face, sweat drop, unlit bulb
+- success      : bulb lights up with pulsing rays, sparkly eyes, open smile
+- error  (new) : crying face with tear streams (auto-returns to idle after ~8 s)
+- sleep  (new) : entered automatically after 2 minutes of idle, zZ floats up
+Click the cat → happy hearts for a moment.
+
+Also exposes get_cat_pixmap() (static face badge for cards) and AnimatedWavePill.
 """
 
 import math
 from PyQt5.QtWidgets import QWidget, QVBoxLayout
-from PyQt5.QtSvg import QSvgWidget
-from PyQt5.QtCore import QTimer, QByteArray, Qt
+from PyQt5.QtSvg import QSvgWidget, QSvgRenderer
+from PyQt5.QtCore import QTimer, QByteArray, Qt, QRectF
+from PyQt5.QtGui import QMouseEvent, QPixmap, QPainter
+
+# ---------------------------------------------------------------------
+# Colours (match ui.theme.PALETTE — Navy Enterprise)
+# ---------------------------------------------------------------------
+CAT_NAVY = "#1f3a5f"
+CAT_LIGHT = "#c9d6e8"
+WHITE = "#ffffff"
+ACCENT = "#f2a7cf"       # blush / hearts
+BULB_ON = "#f6e7a1"      # lit bulb
+TEAR = "#a9c8f0"
+ANGER = "#e5486f"
+
+CAT_VARIANTS = {
+    # name: (body, accent)
+    "navy": (CAT_NAVY, ACCENT),
+    "light": (CAT_LIGHT, ACCENT),
+    # old names kept for compatibility with existing calls
+    "teal": (CAT_NAVY, ACCENT),
+    "pink": (CAT_LIGHT, ACCENT),
+}
+
+HEART = "M 12 6 C 12 3 8 0 5 3 C 0 8 12 16 12 16 C 12 16 24 8 19 3 C 16 0 12 3 12 6 Z"
+
+# Head geometry (viewBox 150 x 150)
+HX, HY, HW, HH = 70.0, 94.0, 48.0, 38.0       # head centre / half-width / half-height
+FX, FY = 70.0, 92.0                           # face anchor
+EX, EY = 120.0, 34.0                          # emote anchor (top-right)
+
+
+# ---------------------------------------------------------------------
+# Drawing helpers
+# ---------------------------------------------------------------------
+def _bean(cx, cy, w, h, b, ear_l=0.0, ear_r=0.0):
+    ears = (f'<path d="M {cx-w*0.92} {cy-h*0.15} L {cx-w*0.8} {cy-h*1.25+ear_l} L {cx-w*0.28} {cy-h*0.78} Z" '
+            f'fill="{b}" stroke="{b}" stroke-width="8" stroke-linejoin="round"/>'
+            f'<path d="M {cx+w*0.92} {cy-h*0.15} L {cx+w*0.8} {cy-h*1.25+ear_r} L {cx+w*0.28} {cy-h*0.78} Z" '
+            f'fill="{b}" stroke="{b}" stroke-width="8" stroke-linejoin="round"/>')
+    head = (f'<path d="M {cx-w} {cy+h*0.15} C {cx-w} {cy-h*0.62}, {cx-w*0.58} {cy-h}, {cx} {cy-h} '
+            f'C {cx+w*0.58} {cy-h}, {cx+w} {cy-h*0.62}, {cx+w} {cy+h*0.15} '
+            f'C {cx+w} {cy+h*0.82}, {cx+w*0.6} {cy+h}, {cx} {cy+h} '
+            f'C {cx-w*0.6} {cy+h}, {cx-w} {cy+h*0.82}, {cx-w} {cy+h*0.15} Z" fill="{b}"/>')
+    return ears + head
+
+
+def _whiskers(b):
+    out = ""
+    for dy, t in ((0, -4), (7, 3)):
+        out += (f'<path d="M {HX-46} {HY+8+dy} L {HX-62} {HY+8+dy+t}" stroke="{b}" stroke-width="2.2" stroke-linecap="round"/>'
+                f'<path d="M {HX+46} {HY+8+dy} L {HX+62} {HY+8+dy+t}" stroke="{b}" stroke-width="2.2" stroke-linecap="round"/>')
+    return out
+
+
+def _spark(x, y, r, c, op=1.0):
+    return (f'<path d="M {x} {y-r} Q {x+r*0.18} {y-r*0.18} {x+r} {y} Q {x+r*0.18} {y+r*0.18} {x} {y+r} '
+            f'Q {x-r*0.18} {y+r*0.18} {x-r} {y} Q {x-r*0.18} {y-r*0.18} {x} {y-r} Z" fill="{c}" opacity="{op:.2f}"/>')
+
+
+def _heart(x, y, sc, c, op=1.0):
+    return f'<g transform="translate({x-12*sc:.1f},{y-8*sc:.1f}) scale({sc:.2f})"><path d="{HEART}" fill="{c}" opacity="{op:.2f}"/></g>'
+
+
+def _drop(x, y, s, b):
+    return (f'<path d="M {x} {y} C {x-5*s} {y+7*s}, {x-5*s} {y+12*s}, {x} {y+12*s} C {x+5*s} {y+12*s}, {x+5*s} {y+7*s}, {x} {y} Z" '
+            f'fill="{WHITE}" stroke="{b}" stroke-width="2.4" stroke-linejoin="round"/>')
+
+
+def _text(x, y, t, size, b, op=1.0):
+    return (f'<text x="{x:.1f}" y="{y:.1f}" font-family="Segoe UI, Arial" font-weight="800" '
+            f'font-size="{size}" fill="{b}" opacity="{op:.2f}">{t}</text>')
+
+
+def _bulb(b, lit, glow=1.0, flicker=False):
+    bx, by = 126.0, 30.0
+    s = ""
+    if lit:
+        for ang, ln in ((-60, 10), (-20, 12), (20, 12), (60, 10), (-100, 9)):
+            r0, r1 = 19, 19 + ln * 0.7 * glow
+            dx, dy = math.cos(math.radians(ang - 90)), math.sin(math.radians(ang - 90))
+            s += (f'<path d="M {bx+dx*r0:.1f} {by+dy*r0:.1f} L {bx+dx*r1:.1f} {by+dy*r1:.1f}" '
+                  f'stroke="{b}" stroke-width="3" stroke-linecap="round"/>')
+    fill = BULB_ON if lit else (WHITE if not flicker else "#eef1f5")
+    s += (f'<path d="M {bx} {by-16} C {bx+12} {by-16} {bx+15} {by-4} {bx+9} {by+4} C {bx+6} {by+8} {bx+6} {by+10} {bx+6} {by+12} '
+          f'L {bx-6} {by+12} C {bx-6} {by+10} {bx-6} {by+8} {bx-9} {by+4} C {bx-15} {by-4} {bx-12} {by-16} {bx} {by-16} Z" '
+          f'fill="{fill}" stroke="{b}" stroke-width="3" stroke-linejoin="round"/>')
+    s += f'<rect x="{bx-6}" y="{by+13}" width="12" height="7" rx="2.5" fill="{b}"/>'
+    return s
+
+
+# ---------------------------------------------------------------------
+# Faces (eyes + mouth) — relative to FX, FY
+# ---------------------------------------------------------------------
+def _ring(x, y, b, rx=9.0, ry=11.0, look_x=0.0, look_y=0.0, sparkle=False):
+    px, py = x + look_x * 3, y + 1 + look_y * 3
+    s = (f'<ellipse cx="{x}" cy="{y}" rx="{rx}" ry="{ry}" fill="{WHITE}"/>'
+         f'<ellipse cx="{px:.1f}" cy="{py:.1f}" rx="{rx*0.55:.1f}" ry="{ry*0.6:.1f}" fill="{b}"/>'
+         f'<circle cx="{px-2:.1f}" cy="{py-2.5:.1f}" r="{rx*0.22:.1f}" fill="{WHITE}"/>')
+    if sparkle:
+        s += _spark(px - 2, py - 3, 3.4, WHITE)
+    return s
+
+
+def _face(expr, b, a, blink=False, look_x=0.0, look_y=0.0):
+    L, R, my = FX - 19, FX + 19, FY + 16
+    if blink and expr in ("open", "busy", "working", "success"):
+        return (f'<path d="M {L-8} {FY} Q {L} {FY+5} {L+8} {FY} M {R-8} {FY} Q {R} {FY+5} {R+8} {FY}" '
+                f'stroke="{WHITE}" stroke-width="3.4" fill="none" stroke-linecap="round"/>'
+                f'<path d="M {FX-6} {my} L {FX+6} {my}" stroke="{WHITE}" stroke-width="2.6" stroke-linecap="round"/>')
+    if expr == "idle":            # thinking: flat eyes
+        return (f'<path d="M {L-7} {FY} L {L+7} {FY} M {R-7} {FY} L {R+7} {FY}" stroke="{WHITE}" stroke-width="4" stroke-linecap="round"/>'
+                f'<path d="M {FX-6} {my} L {FX+6} {my}" stroke="{WHITE}" stroke-width="2.6" stroke-linecap="round"/>')
+    if expr == "open":            # friendly default (cards / click)
+        return (_ring(L, FY, b, look_x=look_x) + _ring(R, FY, b, look_x=look_x) +
+                f'<path d="M {FX-6} {my} Q {FX-3} {my+4} {FX} {my+0.5} Q {FX+3} {my+4} {FX+6} {my}" '
+                f'stroke="{WHITE}" stroke-width="2.4" fill="none" stroke-linecap="round"/>')
+    if expr == "busy":            # looking up at the bulb, unsure
+        return (_ring(L, FY, b, 8, 10, 0.9 + look_x, -0.6 + look_y) + _ring(R, FY, b, 8, 10, 0.9 + look_x, -0.6 + look_y) +
+                f'<path d="M {FX-6} {my} Q {FX} {my-4} {FX+6} {my}" stroke="{WHITE}" stroke-width="2.6" fill="none" stroke-linecap="round"/>')
+    if expr == "working":         # determined brows
+        return (_ring(L, FY, b, look_x=0.6) + _ring(R, FY, b, look_x=0.6) +
+                f'<path d="M {L-9} {FY-15} L {L+7} {FY-10} M {R+9} {FY-15} L {R-7} {FY-10}" stroke="{WHITE}" stroke-width="2.8" stroke-linecap="round"/>'
+                f'<path d="M {FX-6} {my} L {FX+6} {my}" stroke="{WHITE}" stroke-width="2.6" stroke-linecap="round"/>')
+    if expr == "success":
+        return (_ring(L, FY, b, look_x=0.6, sparkle=True) + _ring(R, FY, b, look_x=0.6, sparkle=True) +
+                f'<path d="M {FX-8} {my-2} Q {FX} {my+10} {FX+8} {my-2} Z" fill="{WHITE}"/>'
+                f'<ellipse cx="{L-10}" cy="{FY+12}" rx="5.5" ry="2.8" fill="{a}" opacity="0.85"/>'
+                f'<ellipse cx="{R+10}" cy="{FY+12}" rx="5.5" ry="2.8" fill="{a}" opacity="0.85"/>')
+    if expr == "happy":           # ^^ (click)
+        return (f'<path d="M {L-8} {FY+3} Q {L} {FY-8} {L+8} {FY+3} M {R-8} {FY+3} Q {R} {FY-8} {R+8} {FY+3}" '
+                f'stroke="{WHITE}" stroke-width="4" fill="none" stroke-linecap="round"/>'
+                f'<path d="M {FX-7} {my-2} Q {FX} {my+9} {FX+7} {my-2} Z" fill="{WHITE}"/>'
+                f'<ellipse cx="{L-10}" cy="{FY+12}" rx="5.5" ry="2.8" fill="{a}" opacity="0.85"/>'
+                f'<ellipse cx="{R+10}" cy="{FY+12}" rx="5.5" ry="2.8" fill="{a}" opacity="0.85"/>')
+    if expr == "error":           # crying
+        s = _ring(L, FY, b) + _ring(R, FY, b)
+        for x in (L, R):
+            s += (f'<path d="M {x-3} {FY+11} q -3 6 0 12 q 3 6 0 12" stroke="{TEAR}" stroke-width="3.2" '
+                  f'fill="none" stroke-linecap="round"/>')
+        s += f'<path d="M {FX-6} {my+3} Q {FX} {my-4} {FX+6} {my+3}" stroke="{WHITE}" stroke-width="2.6" fill="none" stroke-linecap="round"/>'
+        return s
+    if expr == "sleep":
+        return (f'<path d="M {L-8} {FY} Q {L} {FY+6} {L+8} {FY} M {R-8} {FY} Q {R} {FY+6} {R+8} {FY}" '
+                f'stroke="{WHITE}" stroke-width="3.4" fill="none" stroke-linecap="round"/>'
+                f'<ellipse cx="{FX}" cy="{my}" rx="2.8" ry="2" fill="{a}"/>')
+    return _face("open", b, a)
+
+
+def build_cat_svg(state: str = "idle", t: float = 0.0, *, body: str = CAT_NAVY, accent: str = ACCENT,
+                  blink: bool = False, bounce: float = 0.0, size: int = 150) -> str:
+    """One frame of the Idea Bulb cat. `t` is time in seconds-ish for the little animations."""
+    b, a = body, accent
+    emote, expr, look_x, look_y = "", state, 0.0, 0.0
+    bob = math.sin(t * 2.0) * 1.6
+    ear_l = ear_r = 0.0
+
+    if state == "idle":
+        for i in range(3):
+            up = max(0.0, math.sin(t * 3.0 - i * 0.9)) * 4.0
+            emote += f'<circle cx="{EX-22+i*13}" cy="{EY+6-i*5-up:.1f}" r="{4.5+i*0.6}" fill="{b}"/>'
+        ear_l = max(0.0, math.sin(t * 1.3)) ** 10 * 4.0
+    elif state == "busy":
+        flicker = int(t * 6) % 7 == 0
+        emote += _bulb(b, lit=False, flicker=flicker) + _text(EX - 22, EY - 2 + math.sin(t * 3) * 2, "?", 20, b)
+        look_x = math.sin(t * 1.5) * 0.25
+        bob = math.sin(t * 4.0) * 2.0
+    elif state == "working":
+        emote += _bulb(b, lit=False) + _drop(16, 50 + (t * 8) % 10, 1.0, b)
+        bob = math.sin(t * 3.5) * 1.8
+    elif state == "success":
+        glow = 0.75 + 0.25 * math.sin(t * 6.0)
+        emote += _bulb(b, lit=True, glow=glow)
+        emote += _spark(26, 40, 7, b, 0.6 + 0.4 * math.sin(t * 5)) + _spark(16, 64, 4, b, 0.6 + 0.4 * math.cos(t * 5))
+        bob = -abs(math.sin(t * 3.2)) * 6.0
+        ear_l, ear_r = math.sin(t * 6) * 2.5, -math.sin(t * 6) * 2.5
+    elif state == "happy":
+        emote += _heart(EX, EY + 4 - (t * 6) % 6, 1.0, a) + _heart(EX + 16, EY + 22, 0.55, a, 0.8) + _heart(24, 44, 0.6, a, 0.8)
+        bob = -abs(math.sin(t * 5.0)) * 5.0
+    elif state == "error":
+        emote += _drop(EX - 6, EY + 2, 1.1, b)
+        bob = math.sin(t * 9.0) * 0.8
+    elif state == "sleep":
+        drift = (t * 6) % 12
+        emote += (_text(EX - 4, EY + 20 - drift * 0.4, "z", 20, b) + _text(EX + 10, EY + 6 - drift * 0.4, "z", 15, b, 0.7)
+                  + _text(EX + 21, EY - 6 - drift * 0.4, "z", 11, b, 0.5))
+        bob = math.sin(t * 1.2) * 1.0
+
+    face = _face(expr, b, a, blink=blink, look_x=look_x, look_y=look_y)
+    head = _bean(HX, HY, HW, HH, b, ear_l, ear_r) + _whiskers(b) + face
+    return (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 150 150" width="{size}" height="{size}">'
+            f'<ellipse cx="{HX}" cy="136" rx="{40 + min(bob, 0) * 0.8:.1f}" ry="4" fill="{b}" opacity="0.10"/>'
+            f'{emote}<g transform="translate(0,{bob + bounce:.2f})">{head}</g></svg>')
+
+
+def get_cat_pixmap(width: int = 56, variant: str = "navy", eye_mode: str = "open") -> QPixmap:
+    """Static cat-face badge (head only) for cards and the Tip box.
+    variant: 'navy' (on light backgrounds) or 'light' (on navy cards)."""
+    body, accent = CAT_VARIANTS.get(variant, CAT_VARIANTS["navy"])
+    expr = {"open": "open", "happy": "happy", "sleep": "sleep"}.get(eye_mode, "open")
+    head = _bean(HX, HY, HW, HH, body) + _whiskers(body) + _face(expr, body if variant in ("navy", "teal") else CAT_NAVY, accent)
+    svg = f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="4 44 132 92">{head}</svg>'
+    height = int(round(width * 92 / 132))
+    renderer = QSvgRenderer(QByteArray(svg.encode("utf-8")))
+    pix = QPixmap(width * 2, height * 2)
+    pix.fill(Qt.transparent)
+    painter = QPainter(pix)
+    painter.setRenderHint(QPainter.Antialiasing, True)
+    renderer.render(painter, QRectF(0, 0, width * 2, height * 2))
+    painter.end()
+    pix.setDevicePixelRatio(2.0)
+    return pix
 
 
 class DancingSvgMascot(QWidget):
-    """
-    Cute Chubby Cat Animated Mascot Widget (แมวอ้วนน่ารักดุ้กดิ๊ก)
-    Soft warm cream fur, wiggling tail, twitching ears, and tapping paws.
-    """
+    """Animated Idea Bulb cat. Public API unchanged: set_state(), toggle_animation()."""
 
     STATE_IDLE = "idle"
     STATE_DOWNLOADING = "downloading"
     STATE_PROCESSING = "processing"
     STATE_TRAINING = "training"
     STATE_SUCCESS = "success"
+    STATE_ERROR = "error"
+    STATE_SLEEP = "sleep"
 
-    def __init__(self, size: int = 130, parent=None):
+    _ALL_STATES = (STATE_IDLE, STATE_DOWNLOADING, STATE_PROCESSING, STATE_TRAINING,
+                   STATE_SUCCESS, STATE_ERROR, STATE_SLEEP)
+    # widget state -> drawing state
+    _DRAW = {STATE_IDLE: "idle", STATE_DOWNLOADING: "busy", STATE_PROCESSING: "busy",
+             STATE_TRAINING: "working", STATE_SUCCESS: "success", STATE_ERROR: "error", STATE_SLEEP: "sleep"}
+
+    TICK_MS = 33
+    SLEEP_AFTER_S = 120     # idle this long -> falls asleep
+    ERROR_HOLD_S = 8        # crying face this long, then back to idle
+
+    def __init__(self, size: int = 140, parent=None):
         super().__init__(parent)
         self.mascot_size = size
         self.state = self.STATE_IDLE
         self.frame_idx = 0
+        self.state_frames = 0
         self.is_animated = True
+        self.bounce_timer = 0
 
-        self.setFixedSize(self.mascot_size, self.mascot_size)
+        self.setFixedSize(size, size)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setToolTip("น้องแมวไอเดีย • คลิกเพื่อเล่นด้วยกันได้นะ 🐾")
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-
         self.svg_widget = QSvgWidget(self)
-        self.svg_widget.setFixedSize(self.mascot_size, self.mascot_size)
+        self.svg_widget.setFixedSize(size, size)
+        self.svg_widget.setStyleSheet("background: transparent;")
         layout.addWidget(self.svg_widget)
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._on_tick)
-        self.timer.start(33)
-
+        self.timer.start(self.TICK_MS)
         self._render_current_frame()
 
+    # -- interaction ------------------------------------------------------
+    def mousePressEvent(self, a0: QMouseEvent):
+        self.bounce_timer = 45
+        if self.state == self.STATE_SLEEP:
+            self.set_state(self.STATE_IDLE)
+        self.state_frames = 0
+        super().mousePressEvent(a0)
+
     def set_state(self, state: str):
-        if state in (self.STATE_IDLE, self.STATE_DOWNLOADING, self.STATE_PROCESSING, self.STATE_TRAINING, self.STATE_SUCCESS):
+        if state in self._ALL_STATES:
+            if state != self.state:
+                self.state_frames = 0
             self.state = state
+            self._render_current_frame()
 
     def toggle_animation(self, enabled: bool):
         self.is_animated = enabled
-        if enabled:
-            if not self.timer.isActive():
-                self.timer.start(33)
-        else:
+        if enabled and not self.timer.isActive():
+            self.timer.start(self.TICK_MS)
+        elif not enabled:
             self.timer.stop()
 
+    # -- animation --------------------------------------------------------
     def _on_tick(self):
         if not self.is_animated:
             return
         self.frame_idx += 1
+        self.state_frames += 1
+        if self.bounce_timer > 0:
+            self.bounce_timer -= 1
+
+        secs = self.state_frames * self.TICK_MS / 1000.0
+        if self.state == self.STATE_IDLE and secs > self.SLEEP_AFTER_S:
+            self.set_state(self.STATE_SLEEP)
+        elif self.state == self.STATE_ERROR and secs > self.ERROR_HOLD_S:
+            self.set_state(self.STATE_IDLE)
         self._render_current_frame()
 
     def _render_current_frame(self):
-        t = self.frame_idx * 0.08
-
-        # Palette
-        fur_color = "#fffbf0"        # Warm creamy white
-        fur_stroke = "#2e1f18"       # Cozy deep brown outline
-        patch_color = "#fed7aa"      # Soft pastel orange/ginger patch
-        ear_pink = "#fca5a5"         # Soft rosy pink
-        blush_pink = "#f87171"       # Rosy blush
-        belly_color = "#fff5eb"      # Soft creamy belly
-        fish_gold = "#f59e0b"        # Fish treat
-
-        # State physics
-        if self.state == self.STATE_IDLE:
-            # Gentle relaxed breathing and tail swishing
-            bob_y = math.sin(t * 2.2) * 3.5
-            tilt_deg = math.sin(t * 1.5) * 3.0
-            tail_deg = math.sin(t * 2.5) * 18.0
-            ear_l_y = math.sin(t * 1.8) * 2.0
-            ear_r_y = -math.sin(t * 1.8) * 2.0
-            paw_l_y = math.sin(t * 2.2) * 2.0
-            paw_r_y = -math.sin(t * 2.2) * 2.0
-            aura_radius = 45 + 2 * math.sin(t * 2.0)
-            aura_color = "#fef3c7"
-            extra_decor = """
-            <!-- Cute gentle sparkles -->
-            <path d="M 22 36 Q 26 36 26 32 Q 26 36 30 36 Q 26 36 26 40 Q 26 36 22 36" fill="#fbbf24" opacity="0.85"/>
-            <path d="M 118 42 Q 121 42 121 39 Q 121 42 124 42 Q 121 42 121 45 Q 121 42 118 42" fill="#f472b6" opacity="0.75"/>
-            """
-            headband = ""
-
-        elif self.state in (self.STATE_DOWNLOADING, self.STATE_PROCESSING):
-            # Fast, excited wiggling ("ดุ้กดิ๊ก") paws tapping!
-            bob_y = math.sin(t * 5.0) * 5.5
-            tilt_deg = math.sin(t * 4.0) * 6.0
-            tail_deg = math.sin(t * 5.5) * 32.0
-            ear_l_y = math.sin(t * 4.5) * 4.0
-            ear_r_y = -math.sin(t * 4.5) * 4.0
-            paw_l_y = 6 * math.sin(t * 6.0)
-            paw_r_y = -6 * math.sin(t * 6.0)
-            aura_radius = 48 + 4 * math.sin(t * 4.0)
-            aura_color = "#cffafe"
-            extra_decor = """
-            <!-- Excited motion stars -->
-            <circle cx="20" cy="48" r="3" fill="#38bdf8" opacity="0.7"/>
-            <circle cx="120" cy="46" r="3.5" fill="#38bdf8" opacity="0.7"/>
-            <path d="M 18 64 Q 14 62 18 60" stroke="#38bdf8" stroke-width="2" fill="none" stroke-linecap="round"/>
-            <path d="M 122 64 Q 126 62 122 60" stroke="#38bdf8" stroke-width="2" fill="none" stroke-linecap="round"/>
-            """
-            headband = ""
-
-        elif self.state == self.STATE_TRAINING:
-            # Concentrated cat with headband and intense tail swish!
-            bob_y = math.sin(t * 3.5) * 4.0
-            tilt_deg = math.sin(t * 2.8) * 4.0
-            tail_deg = math.sin(t * 4.0) * 25.0
-            ear_l_y = math.sin(t * 3.0) * 2.5
-            ear_r_y = -math.sin(t * 3.0) * 2.5
-            paw_l_y = math.sin(t * 3.5) * 3.0
-            paw_r_y = -math.sin(t * 3.5) * 3.0
-            aura_radius = 47 + 3 * math.sin(t * 3.0)
-            aura_color = "#f3e8ff"
-            extra_decor = """
-            <!-- Concentration energy sparks -->
-            <path d="M 18 34 L 24 38 L 20 44" stroke="#a855f7" stroke-width="2" fill="none" stroke-linecap="round"/>
-            <path d="M 122 34 L 116 38 L 120 44" stroke="#a855f7" stroke-width="2" fill="none" stroke-linecap="round"/>
-            """
-            # Red determination headband
-            headband = """
-            <!-- Cute Red Headband -->
-            <path d="M 44 48 Q 70 42 96 48 L 96 54 Q 70 48 44 54 Z" fill="#ef4444" stroke="#2e1f18" stroke-width="1.8"/>
-            <circle cx="70" cy="48" r="3" fill="#ffffff"/>
-            <!-- Headband knot on side -->
-            <path d="M 95 50 Q 104 46 100 56 Q 94 54 95 50" fill="#ef4444" stroke="#2e1f18" stroke-width="1.5"/>
-            """
-
-        elif self.state == self.STATE_SUCCESS:
-            # Extremely happy jumping cat! Fish treat and hearts floating!
-            bob_y = -abs(math.sin(t * 3.8)) * 14.0
-            tilt_deg = math.sin(t * 2.5) * 7.0
-            tail_deg = math.sin(t * 5.0) * 35.0
-            ear_l_y = 5.0 * math.sin(t * 4.0)
-            ear_r_y = -5.0 * math.sin(t * 4.0)
-            paw_l_y = -8 + math.sin(t * 4.5) * 5.0
-            paw_r_y = -8 - math.sin(t * 4.5) * 5.0
-            aura_radius = 50 + 6 * math.sin(t * 3.5)
-            aura_color = "#dcfce7"
-            extra_decor = f"""
-            <!-- Cute Golden Fish 🐟 and Floating Hearts 💕 -->
-            <g transform="translate(14, 22) rotate(-15) scale(0.9)">
-              <!-- Little Fish -->
-              <ellipse cx="12" cy="12" rx="8" ry="5" fill="{fish_gold}" stroke="{fur_stroke}" stroke-width="1.5"/>
-              <polygon points="18,12 25,7 25,17" fill="{fish_gold}" stroke="{fur_stroke}" stroke-width="1.5" stroke-linejoin="round"/>
-              <circle cx="8" cy="11" r="1.2" fill="#ffffff"/>
-            </g>
-            <g transform="translate(108, 18) scale(0.9)">
-              <!-- Floating Pink Heart -->
-              <path d="M 12 6 C 12 3 8 0 5 3 C 0 8 12 16 12 16 C 12 16 24 8 19 3 C 16 0 12 3 12 6 Z" fill="#f43f5e" opacity="0.9"/>
-            </g>
-            """
-            headband = ""
-
-        # Eye animation
-        blink = (self.frame_idx % 110) > 103 and (self.state != self.STATE_SUCCESS)
-        eye_ry = 1.0 if blink else 4.2
-
-        cx = 70
-        cy = 70 + bob_y
-
-        svg_code = f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 140 140" width="{self.mascot_size}" height="{self.mascot_size}">
-  <defs>
-    <radialGradient id="catAura" cx="50%" cy="50%" r="50%">
-      <stop offset="0%" stop-color="{aura_color}" stop-opacity="0.95"/>
-      <stop offset="70%" stop-color="{aura_color}" stop-opacity="0.35"/>
-      <stop offset="100%" stop-color="{aura_color}" stop-opacity="0"/>
-    </radialGradient>
-    <filter id="catShadow" x="-20%" y="-20%" width="140%" height="140%">
-      <feDropShadow dx="0" dy="3.5" stdDeviation="3" flood-color="#2e1f18" flood-opacity="0.12"/>
-    </filter>
-  </defs>
-
-  <!-- Aura Glow -->
-  <circle cx="{cx}" cy="{cy}" r="{aura_radius}" fill="url(#catAura)"/>
-
-  <!-- Extra Decorative Elements -->
-  {extra_decor}
-
-  <!-- Dancing Chubby Cat Buddy -->
-  <g transform="rotate({tilt_deg}, {cx}, {cy + 22})" filter="url(#catShadow)">
-
-    <!-- Ground shadow -->
-    <ellipse cx="{cx}" cy="124" rx="{30 - bob_y * 0.35}" ry="{6 - bob_y * 0.1}" fill="#2e1f18" opacity="0.12"/>
-
-    <!-- Wiggling Fluffy Tail (behind body) -->
-    <g transform="translate({cx + 25}, {cy + 16}) rotate({tail_deg})">
-      <!-- Tail curve -->
-      <path d="M 0 0 C 14 -2, 24 -14, 20 -26 C 17 -31, 10 -29, 13 -22 C 16 -13, 8 2, 0 6 Z"
-            fill="{fur_color}" stroke="{fur_stroke}" stroke-width="2.2" stroke-linejoin="round"/>
-      <!-- Soft Orange Tip on tail -->
-      <path d="M 13 -22 C 16 -13, 10 -4, 4 2 C 7 -4, 15 -14, 13 -22 Z" fill="{patch_color}"/>
-    </g>
-
-    <!-- Chubby Back / Bottom Body -->
-    <ellipse cx="{cx}" cy="{cy + 14}" rx="32" ry="26" fill="{fur_color}" stroke="{fur_stroke}" stroke-width="2.5"/>
-
-    <!-- Left Foot -->
-    <ellipse cx="{cx - 18}" cy="{cy + 36}" rx="8.5" ry="5.5" fill="{fur_color}" stroke="{fur_stroke}" stroke-width="2.2"/>
-    <!-- Right Foot -->
-    <ellipse cx="{cx + 18}" cy="{cy + 36}" rx="8.5" ry="5.5" fill="{fur_color}" stroke="{fur_stroke}" stroke-width="2.2"/>
-
-    <!-- Cream Belly Patch -->
-    <ellipse cx="{cx}" cy="{cy + 17}" rx="19" ry="16" fill="{belly_color}"/>
-
-    <!-- Chubby Round Head -->
-    <ellipse cx="{cx}" cy="{cy - 8}" rx="29" ry="24" fill="{fur_color}" stroke="{fur_stroke}" stroke-width="2.5"/>
-
-    <!-- Ginger Patch over Right Ear -->
-    <path d="M {cx + 6} {cy - 24} Q {cx + 24} {cy - 20} {cx + 27} {cy - 4} Q {cx + 18} {cy - 12} {cx + 6} {cy - 24} Z" fill="{patch_color}" opacity="0.9"/>
-
-    <!-- Left Cat Ear (Twitching) -->
-    <g transform="translate({cx - 18}, {cy - 24 + ear_l_y})">
-      <polygon points="-11,8 -2,-13 9,4" fill="{fur_color}" stroke="{fur_stroke}" stroke-width="2.2" stroke-linejoin="round"/>
-      <polygon points="-8,7 -2,-9 6,4" fill="{ear_pink}" opacity="0.85"/>
-    </g>
-
-    <!-- Right Cat Ear (Twitching) -->
-    <g transform="translate({cx + 18}, {cy - 24 + ear_r_y})">
-      <polygon points="-9,4 2,-13 11,8" fill="{fur_color}" stroke="{fur_stroke}" stroke-width="2.2" stroke-linejoin="round"/>
-      <polygon points="-6,4 2,-9 8,7" fill="{ear_pink}" opacity="0.85"/>
-    </g>
-
-    <!-- Optional Headband -->
-    {headband}
-
-    <!-- Chubby Rosy Blushing Cheeks -->
-    <ellipse cx="{cx - 17}" cy="{cy - 2}" rx="5.5" ry="3.2" fill="{blush_pink}" opacity="0.6"/>
-    <ellipse cx="{cx + 17}" cy="{cy - 2}" rx="5.5" ry="3.2" fill="{blush_pink}" opacity="0.6"/>
-
-    <!-- Whiskers (Left: 3 lines) -->
-    <line x1="{cx - 19}" y1="{cy - 6}" x2="{cx - 38}" y2="{cy - 10}" stroke="{fur_stroke}" stroke-width="1.6" stroke-linecap="round"/>
-    <line x1="{cx - 20}" y1="{cy - 2}" x2="{cx - 40}" y2="{cy - 2}" stroke="{fur_stroke}" stroke-width="1.6" stroke-linecap="round"/>
-    <line x1="{cx - 19}" y1="{cy + 2}" x2="{cx - 37}" y2="{cy + 6}" stroke="{fur_stroke}" stroke-width="1.6" stroke-linecap="round"/>
-
-    <!-- Whiskers (Right: 3 lines) -->
-    <line x1="{cx + 19}" y1="{cy - 6}" x2="{cx + 38}" y2="{cy - 10}" stroke="{fur_stroke}" stroke-width="1.6" stroke-linecap="round"/>
-    <line x1="{cx + 20}" y1="{cy - 2}" x2="{cx + 40}" y2="{cy - 2}" stroke="{fur_stroke}" stroke-width="1.6" stroke-linecap="round"/>
-    <line x1="{cx + 19}" y1="{cy + 2}" x2="{cx + 37}" y2="{cy + 6}" stroke="{fur_stroke}" stroke-width="1.6" stroke-linecap="round"/>
-
-    <!-- Eyes (Kawaii glossy or happy curves) -->
-    {
-      f'''<!-- Happy Curved Eyes -->
-      <path d="M {cx - 13} {cy - 7} Q {cx - 9} {cy - 13} {cx - 5} {cy - 7}" stroke="{fur_stroke}" stroke-width="2.5" fill="none" stroke-linecap="round"/>
-      <path d="M {cx + 5} {cy - 7} Q {cx + 9} {cy - 13} {cx + 13} {cy - 7}" stroke="{fur_stroke}" stroke-width="2.5" fill="none" stroke-linecap="round"/>
-      ''' if self.state == self.STATE_SUCCESS else
-      f'''<!-- Kawaii Round Blinking Eyes -->
-      <ellipse cx="{cx - 9}" cy="{cy - 7}" rx="3.5" ry="{eye_ry}" fill="{fur_stroke}"/>
-      <ellipse cx="{cx + 9}" cy="{cy - 7}" rx="3.5" ry="{eye_ry}" fill="{fur_stroke}"/>
-      {f"<circle cx='{cx - 10}' cy='{cy - 8.5}' r='1.3' fill='#ffffff'/>" if not blink else ""}
-      {f"<circle cx='{cx + 8}' cy='{cy - 8.5}' r='1.3' fill='#ffffff'/>" if not blink else ""}
-      '''
-    }
-
-    <!-- Tiny Pink Nose -->
-    <polygon points="{cx - 2.8},{cy - 2.8} {cx + 2.8},{cy - 2.8} {cx},{cy + 0.5}" fill="#f43f5e" stroke="{fur_stroke}" stroke-width="0.6"/>
-
-    <!-- Cute Cat '3' Mouth (w-shaped smile) -->
-    <path d="M {cx - 5.5} {cy + 1} Q {cx - 2.8} {cy + 4.5} {cx} {cy + 1.2} Q {cx + 2.8} {cy + 4.5} {cx + 5.5} {cy + 1}"
-          stroke="{fur_stroke}" stroke-width="1.8" fill="none" stroke-linecap="round"/>
-
-    <!-- Left Chubby Paw (Tapping / Waving) -->
-    <g transform="translate({cx - 18}, {cy + 16 + paw_l_y})">
-      <ellipse cx="0" cy="0" rx="6.5" ry="6" fill="{fur_color}" stroke="{fur_stroke}" stroke-width="2"/>
-      <!-- Tiny Pink Paw Bean -->
-      <circle cx="0" cy="0" r="2.2" fill="{ear_pink}" opacity="0.8"/>
-    </g>
-
-    <!-- Right Chubby Paw (Tapping / Waving) -->
-    <g transform="translate({cx + 18}, {cy + 16 + paw_r_y})">
-      <ellipse cx="0" cy="0" rx="6.5" ry="6" fill="{fur_color}" stroke="{fur_stroke}" stroke-width="2"/>
-      <!-- Tiny Pink Paw Bean -->
-      <circle cx="0" cy="0" r="2.2" fill="{ear_pink}" opacity="0.8"/>
-    </g>
-
-  </g>
-</svg>"""
-
-        self.svg_widget.load(QByteArray(svg_code.encode("utf-8")))
+        t = self.frame_idx * self.TICK_MS / 1000.0
+        draw = "happy" if self.bounce_timer > 0 else self._DRAW.get(self.state, "idle")
+        blink = (self.frame_idx % 120) > 114
+        svg = build_cat_svg(draw, t, blink=blink, size=self.mascot_size)
+        self.svg_widget.load(QByteArray(svg.encode("utf-8")))
 
 
 class AnimatedWavePill(QSvgWidget):
-    """Aesthetic pastel activity indicator."""
+    """Small navy activity indicator next to the app title."""
 
-    def __init__(self, width: int = 36, height: int = 18, parent=None):
+    COLORS = ["#9fb6d4", "#6f8fb8", "#1f3a5f", "#6f8fb8", "#9fb6d4"]
+
+    def __init__(self, width: int = 44, height: int = 20, parent=None):
         super().__init__(parent)
         self.setFixedSize(width, height)
         self.phase = 0
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._tick)
-        self.timer.start(50)
+        self.timer.start(60)
         self._render()
 
     def _tick(self):
@@ -309,17 +345,11 @@ class AnimatedWavePill(QSvgWidget):
         self._render()
 
     def _render(self):
-        p = self.phase * 0.18
-        h1 = 4 + 7 * abs(math.sin(p))
-        h2 = 4 + 7 * abs(math.sin(p + 0.8))
-        h3 = 4 + 7 * abs(math.sin(p + 1.6))
-        h4 = 4 + 7 * abs(math.sin(p + 2.4))
-
-        svg = f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 36 18" width="36" height="18">
-          <rect x="0" y="0" width="36" height="18" rx="9" fill="#0f3747" opacity="0.12"/>
-          <line x1="8" y1="{9 - h1/2}" x2="8" y2="{9 + h1/2}" stroke="#0f3747" stroke-width="2.5" stroke-linecap="round"/>
-          <line x1="14" y1="{9 - h2/2}" x2="14" y2="{9 + h2/2}" stroke="#0f3747" stroke-width="2.5" stroke-linecap="round"/>
-          <line x1="20" y1="{9 - h3/2}" x2="20" y2="{9 + h3/2}" stroke="#0f3747" stroke-width="2.5" stroke-linecap="round"/>
-          <line x1="26" y1="{9 - h4/2}" x2="26" y2="{9 + h4/2}" stroke="#0f3747" stroke-width="2.5" stroke-linecap="round"/>
-        </svg>"""
+        p = self.phase * 0.16
+        bars = ""
+        for i, c in enumerate(self.COLORS):
+            h = 5 + 9 * abs(math.sin(p + i * 0.7))
+            bars += f'<rect x="{5 + i * 7}" y="{17 - h:.1f}" width="4.5" height="{h:.1f}" rx="1.5" fill="{c}"/>'
+        svg = (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 44 20" width="44" height="20">'
+               f'<rect x="0" y="0" width="44" height="20" rx="4" fill="#e5ebf3"/>{bars}</svg>')
         self.load(QByteArray(svg.encode("utf-8")))

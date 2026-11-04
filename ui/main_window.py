@@ -25,10 +25,12 @@ from PyQt5.QtWidgets import (
     QStackedWidget, QLabel, QLineEdit, QPushButton, QComboBox, QSpinBox,
     QDoubleSpinBox, QSlider, QCheckBox, QRadioButton, QButtonGroup,
     QTableWidget, QTableWidgetItem, QHeaderView, QFileDialog, QMessageBox,
-    QProgressBar, QPlainTextEdit, QFrame, QGroupBox, QScrollArea, QSplitter
+    QProgressBar, QPlainTextEdit, QFrame, QGroupBox, QScrollArea, QSplitter,
+    QApplication, QGraphicsDropShadowEffect
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize
-from PyQt5.QtGui import QImage, QPixmap
+from PyQt5.QtGui import QImage, QPixmap, QColor
+from datetime import datetime
 
 from core.cvat_client import CvatClientWrapper, sanitize_filename
 from core.merger import CocoDatasetMerger
@@ -36,9 +38,9 @@ from core.converter import CocoToYoloConverter
 from core.splitter import DatasetSplitter
 from core.trainer import YoloTrainerEngine, auto_tune_hyperparameters, get_next_run_version
 from core.tester import YoloTestEngine, IMAGE_EXTS, VIDEO_EXTS
-from ui.dancing_svg import DancingSvgMascot, AnimatedWavePill
-from ui.theme import DARK_STYLESHEET
-from ui.svg_icons import get_svg_icon, get_svg_pixmap
+from ui.dancing_svg import DancingSvgMascot, AnimatedWavePill, get_cat_pixmap
+from ui.theme import DARK_STYLESHEET, PALETTE
+from ui.svg_icons import get_svg_icon, get_svg_pixmap, icon_name_for
 
 
 def bgr_to_qpixmap(bgr_array: np.ndarray) -> QPixmap:
@@ -327,9 +329,9 @@ class MainWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle(".☘︎ ݁˖ CVAT to YOLO Studio • Cozy AI Pipeline")
-        self.resize(1180, 860)
-        self.setMinimumSize(960, 640)
+        self.setWindowTitle("CVAT to YOLO Studio")
+        self.setMinimumSize(980, 640)
+        self._fit_to_screen()
 
         # Single Unified Data Folder Architecture
         self.app_dir = Path("C:/Articulus/cvat").resolve()
@@ -358,6 +360,133 @@ class MainWindow(QMainWindow):
 
         self._init_ui()
         self.setStyleSheet(DARK_STYLESHEET)
+        self._apply_inverse_icons()
+
+    # -----------------------------------------------------------------
+    # Desktop sizing & styling helpers
+    # -----------------------------------------------------------------
+    def _fit_to_screen(self):
+        """Open at a comfortable desktop size: ~88% of the available screen,
+        capped so it doesn't look stretched on big monitors, and centred."""
+        screen = QApplication.primaryScreen()
+        if screen is None:
+            self.resize(1280, 820)
+            return
+        avail = screen.availableGeometry()
+        w = max(self.minimumWidth(), min(int(avail.width() * 0.88), 1480))
+        h = max(self.minimumHeight(), min(int(avail.height() * 0.90), 960))
+        w, h = min(w, avail.width()), min(h, avail.height())
+        self.resize(w, h)
+        self.move(avail.x() + (avail.width() - w) // 2,
+                  avail.y() + (avail.height() - h) // 2)
+
+    DARK_BUTTON_CLASSES = ("PrimaryButton", "StepNavButton", "LoginButton", "DangerButton")
+
+    def _apply_inverse_icons(self):
+        """Dark (navy / red) buttons get the white version of their icon."""
+        for btn in self.findChildren(QPushButton):
+            if (btn.property("class") or "") not in self.DARK_BUTTON_CLASSES or btn.icon().isNull():
+                continue
+            found = icon_name_for(btn.icon())
+            if found:
+                name, size = found
+                btn.setIcon(get_svg_icon(name, size, inverse=True))
+
+    @staticmethod
+    def _repolish(widget: QWidget):
+        """Re-apply stylesheet to a widget and all its children (after a class change)."""
+        for w in [widget] + widget.findChildren(QWidget):
+            w.style().unpolish(w)
+            w.style().polish(w)
+            w.update()
+
+    @staticmethod
+    def _soft_shadow(widget: QWidget, blur: int = 36, dy: int = 10, alpha: int = 28):
+        """Soft floating shadow like the cards in the reference."""
+        eff = QGraphicsDropShadowEffect(widget)
+        eff.setBlurRadius(blur)
+        eff.setOffset(0, dy)
+        eff.setColor(QColor(14, 75, 90, alpha))
+        widget.setGraphicsEffect(eff)
+
+    @staticmethod
+    def _time_greeting() -> str:
+        hour = datetime.now().hour
+        if hour < 12:
+            return "Good Morning"
+        if hour < 17:
+            return "Good Afternoon"
+        return "Good Evening"
+
+    def _make_choice_card(self, variant: str, title: str, subtitle: str, on_click) -> QFrame:
+        """Square-ish choice card like "Hang out" / "Laugh": cat badge, title, round → badge."""
+        card = QFrame()
+        card.setProperty("class", "ChoiceCardPink" if variant == "pink" else "ChoiceCardNavy")
+        card.setCursor(Qt.PointingHandCursor)
+        card.setMinimumHeight(172)
+        lay = QVBoxLayout(card)
+        lay.setContentsMargins(18, 16, 14, 14)
+        lay.setSpacing(4)
+
+        face = QLabel()
+        face.setPixmap(get_cat_pixmap(64, "teal" if variant == "pink" else "pink"))
+        lay.addWidget(face, alignment=Qt.AlignLeft)
+        lay.addStretch(1)
+
+        bottom = QHBoxLayout()
+        bottom.setSpacing(6)
+        txt = QVBoxLayout()
+        txt.setSpacing(1)
+        lbl_t = QLabel(title)
+        lbl_t.setProperty("class", "ChoiceTitlePink" if variant == "pink" else "ChoiceTitleNavy")
+        lbl_s = QLabel(subtitle)
+        lbl_s.setProperty("class", "ChoiceSubPink" if variant == "pink" else "ChoiceSubNavy")
+        lbl_s.setWordWrap(True)
+        txt.addWidget(lbl_t)
+        txt.addWidget(lbl_s)
+        bottom.addLayout(txt, 1)
+
+        arrow = QLabel("→")
+        arrow.setAlignment(Qt.AlignCenter)
+        arrow.setProperty("class", "ArrowBadgePink" if variant == "pink" else "ArrowBadgeNavy")
+        bottom.addWidget(arrow, 0, Qt.AlignBottom)
+        lay.addLayout(bottom)
+
+        card.mousePressEvent = lambda e: on_click()
+        return card
+
+    def _make_todo_row(self, icon: str, tile_bg: str, title: str, subtitle: str) -> QFrame:
+        """Row like "Mind Detox / Gratitude Notes": icon tile, two lines of text, play circle."""
+        row = QFrame()
+        row.setProperty("class", "SoftCard")
+        lay = QHBoxLayout(row)
+        lay.setContentsMargins(10, 10, 14, 10)
+        lay.setSpacing(12)
+
+        tile = QLabel()
+        tile.setFixedSize(46, 46)
+        tile.setAlignment(Qt.AlignCenter)
+        tile.setPixmap(get_svg_pixmap(icon, 28, 28))
+        tile.setStyleSheet(f"background-color: {tile_bg}; border-radius: 14px;")
+        lay.addWidget(tile)
+
+        txt = QVBoxLayout()
+        txt.setSpacing(0)
+        t = QLabel(title)
+        t.setStyleSheet(f"font-weight: 700; font-size: 13px; color: {PALETTE['ink']};")
+        st = QLabel(subtitle)
+        st.setStyleSheet(f"font-size: 11.5px; color: {PALETTE['muted']};")
+        txt.addWidget(t)
+        txt.addWidget(st)
+        lay.addLayout(txt, 1)
+
+        play = QLabel("▶")
+        play.setAlignment(Qt.AlignCenter)
+        play.setFixedSize(30, 30)
+        play.setStyleSheet(f"border: 2px solid {PALETTE['ink']}; border-radius: 15px; "
+                           f"color: {PALETTE['ink']}; font-size: 10px; padding-left: 2px;")
+        lay.addWidget(play)
+        return row
 
     def _wrap_page_scroll(self, widget: QWidget) -> QScrollArea:
         scroll = QScrollArea()
@@ -382,7 +511,7 @@ class MainWindow(QMainWindow):
         self.view_login = self._build_login_view()
         self.view_studio = self._build_studio_view()
 
-        self.root_stack.addWidget(self.view_login)
+        self.root_stack.addWidget(self._wrap_page_scroll(self.view_login))
         self.root_stack.addWidget(self.view_studio)
         root_layout.addWidget(self.root_stack)
 
@@ -393,113 +522,211 @@ class MainWindow(QMainWindow):
     # =================================================================
     def _build_login_view(self) -> QWidget:
         view = QWidget()
-        layout = QVBoxLayout(view)
-        layout.setContentsMargins(20, 20, 20, 20)
+        outer = QVBoxLayout(view)
+        outer.setContentsMargins(36, 24, 36, 18)
+        outer.setSpacing(0)
+        outer.addStretch(1)
 
-        layout.addStretch(1)
+        # Centred content column (keeps a calm, phone-like rhythm on wide monitors)
+        content = QWidget()
+        content.setMaximumWidth(1080)
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(22)
 
         center_row = QHBoxLayout()
         center_row.addStretch(1)
+        center_row.addWidget(content, 100)
+        center_row.addStretch(1)
 
-        # Center Login Card (Original glowing card design)
-        card = QFrame()
-        card.setProperty("class", "LoginCard")
-        card.setFixedWidth(520)
-        card_layout = QVBoxLayout(card)
-        card_layout.setContentsMargins(34, 28, 34, 28)
-        card_layout.setSpacing(14)
+        # ---------- Greeting header + bell ----------
+        header = QHBoxLayout()
+        header.setSpacing(12)
+        head_txt = QVBoxLayout()
+        head_txt.setSpacing(6)
 
-        # Wiggling Chubby Cat Mascot on top of Login Card
-        mascot_box = QHBoxLayout()
-        self.login_mascot = DancingSvgMascot(size=130)
-        mascot_box.addStretch()
-        mascot_box.addWidget(self.login_mascot)
-        mascot_box.addStretch()
-        card_layout.addLayout(mascot_box)
+        lbl_greeting = QLabel(f"{self._time_greeting()}, Developer")
+        lbl_greeting.setObjectName("greetingTitle")
+        head_txt.addWidget(lbl_greeting)
 
-        # Title & Subtitle
-        lbl_title = QLabel("CVAT Portal Sign-In")
-        lbl_title.setObjectName("loginTitle")
-        lbl_title.setAlignment(Qt.AlignCenter)
-        card_layout.addWidget(lbl_title)
+        lbl_sub = QLabel("Select what you want more for now")
+        lbl_sub.setObjectName("greetingSubtitle")
+        head_txt.addWidget(lbl_sub)
+        header.addLayout(head_txt, 1)
 
-        lbl_sub = QLabel("Enter your CVAT server credentials to access datasets, images & annotations.")
-        lbl_sub.setObjectName("loginSubtitle")
-        lbl_sub.setAlignment(Qt.AlignCenter)
-        lbl_sub.setWordWrap(True)
-        card_layout.addWidget(lbl_sub)
+        bell = QLabel()
+        bell.setProperty("class", "CircleBadge")
+        bell.setAlignment(Qt.AlignCenter)
+        bell.setPixmap(get_svg_pixmap("bell", 24, 24))
+        bell.setFixedSize(52, 52)
+        bell.setStyleSheet("border-radius: 26px; min-width: 52px; max-width: 52px; min-height: 52px; max-height: 52px;")
+        header.addWidget(bell, 0, Qt.AlignTop)
+        layout.addLayout(header)
 
-        card_layout.addSpacing(4)
+        # ---------- Two columns ----------
+        cols = QHBoxLayout()
+        cols.setSpacing(24)
+
+        # LEFT: choice cards + quote/mascot card
+        left_col = QVBoxLayout()
+        left_col.setSpacing(18)
+
+        choices = QHBoxLayout()
+        choices.setSpacing(16)
+        choices.addWidget(self._make_choice_card(
+            "pink", "Work Offline", "Use local COCO / YOLO data", self._on_skip_login), 1)
+        choices.addWidget(self._make_choice_card(
+            "navy", "Auto-Trainer", "Train YOLO detect & segment",
+            lambda: (self._on_skip_login(), self._go_to_step(4))), 1)
+        left_col.addLayout(choices)
+
+        quote_card = QFrame()
+        quote_card.setProperty("class", "LoginCard")
+        qc_lay = QVBoxLayout(quote_card)
+        qc_lay.setContentsMargins(26, 20, 22, 22)
+        qc_lay.setSpacing(10)
+
+        q_top = QHBoxLayout()
+        q_top.setSpacing(10)
+        q_txt = QVBoxLayout()
+        q_txt.setSpacing(8)
+        tag_row = QHBoxLayout()
+        pill = QLabel("Day advice")
+        pill.setProperty("class", "TagPink")
+        tag_row.addWidget(pill)
+        tag_row.addStretch()
+        q_txt.addLayout(tag_row)
+
+        lbl_quote = QLabel("\u201cPatience is the companion of wisdom.\u201d")
+        lbl_quote.setObjectName("heroQuoteText")
+        lbl_quote.setWordWrap(True)
+        q_txt.addWidget(lbl_quote)
+
+        lbl_author = QLabel("— Saint Augustine")
+        lbl_author.setObjectName("heroQuoteAuthor")
+        q_txt.addWidget(lbl_author)
+        q_txt.addStretch(1)
+        q_top.addLayout(q_txt, 1)
+
+        self.login_mascot = DancingSvgMascot(size=140)
+        q_top.addWidget(self.login_mascot, 0, Qt.AlignVCenter)
+        qc_lay.addLayout(q_top)
+
+        lbl_things = QLabel("Things you can do")
+        lbl_things.setProperty("class", "SectionTitle")
+        qc_lay.addWidget(lbl_things)
+
+        for icon, tile_bg, title, sub in (
+            ("step_cvat", PALETTE["lilac"], "Fetch CVAT tasks", "Download COCO 1.0 && flatten images"),
+            ("step_train", PALETTE["sky"], "Train && test YOLO", "Auto-tune, early stop, preview results"),
+        ):
+            qc_lay.addWidget(self._make_todo_row(icon, tile_bg, title.replace("&&", "&"), sub.replace("&&", "&")))
+        qc_lay.addStretch(1)
+        left_col.addWidget(quote_card, 1)
+
+        cols.addLayout(left_col, 11)
+
+        # RIGHT: Sign-in card
+        right_card = QFrame()
+        right_card.setProperty("class", "LoginCard")
+        right_card.setMinimumWidth(400)
+        right_layout = QVBoxLayout(right_card)
+        right_layout.setContentsMargins(34, 28, 34, 28)
+        right_layout.setSpacing(10)
+
+        form_tag_row = QHBoxLayout()
+        for text, cls in (("CVAT", "TagYellow"), ("Server", "TagGreen"), ("Portal", "TagPurple")):
+            t = QLabel(text)
+            t.setProperty("class", cls)
+            form_tag_row.addWidget(t)
+        form_tag_row.addStretch()
+        right_layout.addLayout(form_tag_row)
+        right_layout.addSpacing(4)
+
+        lbl_form_title = QLabel("Sign in to CVAT")
+        lbl_form_title.setObjectName("loginTitle")
+        right_layout.addWidget(lbl_form_title)
+
+        lbl_form_sub = QLabel("Enter your CVAT server credentials to access tasks, images & annotations.")
+        lbl_form_sub.setObjectName("loginSubtitle")
+        lbl_form_sub.setWordWrap(True)
+        right_layout.addWidget(lbl_form_sub)
+        right_layout.addSpacing(4)
 
         # Alert Banner (Hidden by default)
         self.lbl_login_alert = QLabel()
         self.lbl_login_alert.setProperty("class", "AlertError")
         self.lbl_login_alert.setWordWrap(True)
         self.lbl_login_alert.hide()
-        card_layout.addWidget(self.lbl_login_alert)
+        right_layout.addWidget(self.lbl_login_alert)
 
-        # Form Inputs
-        # 1. Server URL (BLANK BY DEFAULT as requested!)
-        lbl_url = QLabel("CVAT Server URL:")
-        lbl_url.setStyleSheet("font-weight: 700; color: #0f3747;")
-        card_layout.addWidget(lbl_url)
+        # Inputs
+        lbl_url = QLabel("Server URL")
+        lbl_url.setProperty("class", "FieldLabel")
+        right_layout.addWidget(lbl_url)
         self.txt_login_url = QLineEdit("")
         self.txt_login_url.setPlaceholderText("http://<your-cvat-server>:8080")
         self.txt_login_url.setProperty("class", "LoginInput")
-        card_layout.addWidget(self.txt_login_url)
+        right_layout.addWidget(self.txt_login_url)
 
-        # 2. Username
-        lbl_user = QLabel("Username:")
-        lbl_user.setStyleSheet("font-weight: 700; color: #0f3747;")
-        card_layout.addWidget(lbl_user)
+        lbl_user = QLabel("Username")
+        lbl_user.setProperty("class", "FieldLabel")
+        right_layout.addWidget(lbl_user)
         self.txt_login_user = QLineEdit("")
         self.txt_login_user.setPlaceholderText("Enter your CVAT username")
         self.txt_login_user.setProperty("class", "LoginInput")
-        card_layout.addWidget(self.txt_login_user)
+        right_layout.addWidget(self.txt_login_user)
 
-        # 3. Password
-        lbl_pass = QLabel("Password:")
-        lbl_pass.setStyleSheet("font-weight: 700; color: #0f3747;")
-        card_layout.addWidget(lbl_pass)
+        lbl_pass = QLabel("Password")
+        lbl_pass.setProperty("class", "FieldLabel")
+        right_layout.addWidget(lbl_pass)
+
+        pass_row = QHBoxLayout()
+        pass_row.setSpacing(8)
+        pass_row.setContentsMargins(0, 0, 0, 0)
         self.txt_login_pass = QLineEdit("")
         self.txt_login_pass.setEchoMode(QLineEdit.Password)
         self.txt_login_pass.setPlaceholderText("Enter your CVAT password")
         self.txt_login_pass.setProperty("class", "LoginInput")
         self.txt_login_pass.returnPressed.connect(self._on_do_login)
-        card_layout.addWidget(self.txt_login_pass)
 
-        # Status Label
+        self.btn_toggle_pass = QPushButton()
+        self.btn_toggle_pass.setObjectName("btnTogglePassword")
+        self.btn_toggle_pass.setIcon(get_svg_icon("eye_off", 20))
+        self.btn_toggle_pass.setToolTip("Show / Hide Password (แสดงหรือซ่อนรหัสผ่าน)")
+        self.btn_toggle_pass.setCursor(Qt.PointingHandCursor)
+        self.btn_toggle_pass.setFixedSize(42, 42)
+        self.btn_toggle_pass.clicked.connect(self._toggle_password_visibility)
+
+        pass_row.addWidget(self.txt_login_pass, 1)
+        pass_row.addWidget(self.btn_toggle_pass)
+        right_layout.addLayout(pass_row)
+
         self.lbl_login_status = QLabel("")
         self.lbl_login_status.setAlignment(Qt.AlignCenter)
-        self.lbl_login_status.setStyleSheet("color: #0f766e; font-weight: 600;")
-        card_layout.addWidget(self.lbl_login_status)
+        self.lbl_login_status.setStyleSheet(f"color: {PALETTE['teal']}; font-weight: 600;")
+        right_layout.addWidget(self.lbl_login_status)
+        right_layout.addStretch(1)
 
-        # Sign In Button
-        self.btn_do_login = QPushButton("🚀 Sign In & Launch Studio")
+        self.btn_do_login = QPushButton("Sign In && Launch Studio")
         self.btn_do_login.setProperty("class", "LoginButton")
         self.btn_do_login.setCursor(Qt.PointingHandCursor)
         self.btn_do_login.clicked.connect(self._on_do_login)
-        card_layout.addWidget(self.btn_do_login)
+        right_layout.addWidget(self.btn_do_login)
 
-        # Skip / Local Offline Mode Link
-        card_layout.addSpacing(4)
-        btn_skip = QPushButton("📁 Work with Local Datasets (Skip Login / Offline Mode)")
-        btn_skip.setProperty("class", "SkipLoginButton")
-        btn_skip.setCursor(Qt.PointingHandCursor)
-        btn_skip.clicked.connect(self._on_skip_login)
-        card_layout.addWidget(btn_skip, alignment=Qt.AlignCenter)
+        cols.addWidget(right_card, 9)
+        layout.addLayout(cols)
 
-        center_row.addWidget(card)
-        center_row.addStretch(1)
+        for w in (quote_card, right_card):
+            self._soft_shadow(w)
 
-        layout.addLayout(center_row)
-        layout.addStretch(1)
+        outer.addLayout(center_row)
+        outer.addStretch(1)
 
-        # Footer version stamp
-        lbl_foot = QLabel("CVAT to YOLO Studio • Cozy AI Pipeline v2.5")
-        lbl_foot.setStyleSheet("color: #94a3b8; font-size: 11px;")
+        lbl_foot = QLabel("CVAT to YOLO Studio • Navy Enterprise Edition v3.0")
+        lbl_foot.setStyleSheet(f"color: {PALETTE['faint']}; font-size: 11px;")
         lbl_foot.setAlignment(Qt.AlignCenter)
-        layout.addWidget(lbl_foot)
+        outer.addWidget(lbl_foot)
 
         return view
 
@@ -509,8 +736,8 @@ class MainWindow(QMainWindow):
     def _build_studio_view(self) -> QWidget:
         view = QWidget()
         layout = QVBoxLayout(view)
-        layout.setContentsMargins(18, 12, 18, 12)
-        layout.setSpacing(10)
+        layout.setContentsMargins(22, 14, 22, 14)
+        layout.setSpacing(12)
 
         # 1. Studio Header with Cute Chubby Cat Mascot & User Info
         layout.addWidget(self._build_studio_header())
@@ -540,32 +767,34 @@ class MainWindow(QMainWindow):
     # Studio Header
     # -----------------------------------------------------------------
     def _build_studio_header(self) -> QFrame:
+        """Top app bar sitting on the background (like the reference phones): cat, greeting, actions."""
         card = QFrame()
-        card.setProperty("class", "CardFrame")
+        card.setObjectName("topAppBar")
         layout = QHBoxLayout(card)
-        layout.setContentsMargins(18, 10, 18, 10)
+        layout.setContentsMargins(6, 0, 6, 0)
+        layout.setSpacing(12)
+
+        self.studio_mascot = DancingSvgMascot(size=76)
+        layout.addWidget(self.studio_mascot)
 
         text_layout = QVBoxLayout()
         text_layout.setSpacing(2)
 
         title_row = QHBoxLayout()
-        title_lbl = QLabel("🚀 CVAT to YOLO Studio & Pipeline")
+        title_row.setSpacing(10)
+        title_lbl = QLabel("CVAT to YOLO Studio")
         title_lbl.setObjectName("appTitleLabel")
         title_row.addWidget(title_lbl)
-
-        # Pulsing Wave Indicator
-        self.wave_indicator = AnimatedWavePill(36, 18)
+        self.wave_indicator = AnimatedWavePill(44, 20)
         title_row.addWidget(self.wave_indicator)
         title_row.addStretch()
         text_layout.addLayout(title_row)
 
-        self.lbl_user_badge = QLabel("👤 Local Mode • Ready to process datasets")
-        self.lbl_user_badge.setStyleSheet("color: #64748b; font-weight: 600; font-size: 12px;")
+        self.lbl_user_badge = QLabel("Local Mode • Ready to process datasets")
+        self.lbl_user_badge.setObjectName("userBadge")
         text_layout.addWidget(self.lbl_user_badge)
-
         layout.addLayout(text_layout, stretch=1)
 
-        # Quick data/ folder link
         btn_data = QPushButton("data/ Folder")
         btn_data.setProperty("class", "SecondaryNavButton")
         btn_data.setIcon(get_svg_icon("folder", 16))
@@ -574,7 +803,6 @@ class MainWindow(QMainWindow):
         btn_data.clicked.connect(lambda: self._open_dir(self.data_dir))
         layout.addWidget(btn_data)
 
-        # Logout Button (Switch back to view_login)
         btn_logout = QPushButton("Logout")
         btn_logout.setProperty("class", "LogoutButton")
         btn_logout.setIcon(get_svg_icon("logout", 14))
@@ -583,29 +811,32 @@ class MainWindow(QMainWindow):
         btn_logout.clicked.connect(self._on_logout)
         layout.addWidget(btn_logout)
 
-        layout.addSpacing(6)
-
-        # Chubby Cat Mascot in Studio Header (size 64px)
-        self.studio_mascot = DancingSvgMascot(size=64)
-        layout.addWidget(self.studio_mascot)
+        bell = QPushButton()
+        bell.setObjectName("circleNavButton")
+        bell.setIcon(get_svg_icon("bell", 22))
+        bell.setIconSize(QSize(22, 22))
+        bell.setCursor(Qt.PointingHandCursor)
+        bell.setToolTip("Open runs/ folder")
+        bell.clicked.connect(lambda: self._open_dir(self.runs_dir))
+        layout.addWidget(bell)
 
         return card
 
     # -----------------------------------------------------------------
-    # Interactive Stepper Bar (Cohesive Connected Pipeline)
+    # Stepper — segmented pills ("Day | Week | Month" style)
     # -----------------------------------------------------------------
     def _build_stepper_bar(self) -> QFrame:
         bar = QFrame()
         bar.setProperty("class", "StepperContainer")
         layout = QHBoxLayout(bar)
-        layout.setContentsMargins(6, 4, 6, 4)
-        layout.setSpacing(6)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
 
         self.step_buttons: list[QPushButton] = []
         for idx, (title, sub) in enumerate(self.STEP_TITLES):
             btn = QPushButton()
             btn.setProperty("class", "StepButtonActive" if idx == 0 else "StepButton")
-            btn.setText(f"{title}\n{sub}")
+            btn.setText(f"{title}\n{sub}".replace("&", "&&"))
             btn.setCursor(Qt.PointingHandCursor)
             btn.clicked.connect(lambda checked, step_idx=idx: self._go_to_step(step_idx))
             layout.addWidget(btn, stretch=1)
@@ -614,17 +845,22 @@ class MainWindow(QMainWindow):
         return bar
 
     # -----------------------------------------------------------------
-    # Guide Box
+    # Guide Box — pink card like "Yes or No Quiz"
     # -----------------------------------------------------------------
     def _build_guide_box(self) -> QFrame:
         box = QFrame()
         box.setProperty("class", "GuideBox")
         layout = QHBoxLayout(box)
-        layout.setContentsMargins(14, 8, 14, 8)
+        layout.setContentsMargins(16, 10, 18, 10)
+        layout.setSpacing(12)
 
         icon_lbl = QLabel()
-        icon_lbl.setPixmap(get_svg_pixmap("sparkle", 18, 18))
+        icon_lbl.setPixmap(get_cat_pixmap(34, "teal"))
         layout.addWidget(icon_lbl)
+
+        tag = QLabel("Tip")
+        tag.setProperty("class", "TagNavy")
+        layout.addWidget(tag)
 
         self.lbl_guide = QLabel(self.STEP_GUIDES[0])
         self.lbl_guide.setObjectName("guideLabel")
@@ -634,32 +870,48 @@ class MainWindow(QMainWindow):
         return box
 
     # -----------------------------------------------------------------
-    # Bottom Stepper Footer
+    # Bottom Footer — date-strip style step circles
     # -----------------------------------------------------------------
     def _build_stepper_footer(self) -> QFrame:
         footer = QFrame()
+        footer.setObjectName("bottomNavFooter")
         layout = QHBoxLayout(footer)
-        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setContentsMargins(10, 8, 10, 8)
+        layout.setSpacing(8)
 
-        self.btn_footer_prev = QPushButton("Previous Step")
+        self.btn_footer_prev = QPushButton("Previous")
         self.btn_footer_prev.setProperty("class", "SecondaryNavButton")
-        self.btn_footer_prev.setIcon(get_svg_icon("arrow_left", 14))
-        self.btn_footer_prev.setIconSize(QSize(14, 14))
+        self.btn_footer_prev.setIcon(get_svg_icon("arrow_left", 16))
+        self.btn_footer_prev.setIconSize(QSize(16, 16))
+        self.btn_footer_prev.setCursor(Qt.PointingHandCursor)
         self.btn_footer_prev.clicked.connect(self._on_prev_step)
         layout.addWidget(self.btn_footer_prev)
 
         layout.addStretch()
 
+        self.step_pills: list[QPushButton] = []
+        for idx in range(len(self.STEP_TITLES)):
+            pill = QPushButton(str(idx + 1))
+            pill.setProperty("class", "StepPillActive" if idx == 0 else "StepPill")
+            pill.setCursor(Qt.PointingHandCursor)
+            pill.setToolTip(self.STEP_TITLES[idx][0])
+            pill.clicked.connect(lambda checked, step_idx=idx: self._go_to_step(step_idx))
+            layout.addWidget(pill)
+            self.step_pills.append(pill)
+
+        layout.addSpacing(8)
         self.lbl_step_indicator = QLabel("Step 1 of 6")
-        self.lbl_step_indicator.setStyleSheet("font-weight: 700; color: #0f3747; font-size: 13px;")
+        self.lbl_step_indicator.setObjectName("stepIndicator")
         layout.addWidget(self.lbl_step_indicator)
 
         layout.addStretch()
 
         self.btn_footer_next = QPushButton("Next Step")
         self.btn_footer_next.setProperty("class", "StepNavButton")
-        self.btn_footer_next.setIcon(get_svg_icon("arrow_right", 14))
-        self.btn_footer_next.setIconSize(QSize(14, 14))
+        self.btn_footer_next.setLayoutDirection(Qt.RightToLeft)
+        self.btn_footer_next.setIcon(get_svg_icon("arrow_right", 16))
+        self.btn_footer_next.setIconSize(QSize(16, 16))
+        self.btn_footer_next.setCursor(Qt.PointingHandCursor)
         self.btn_footer_next.clicked.connect(self._on_next_step)
         layout.addWidget(self.btn_footer_next)
 
@@ -755,7 +1007,7 @@ class MainWindow(QMainWindow):
         btn_browse_dl.clicked.connect(lambda: self._browse_folder(self.txt_dl_folder))
         dl_layout.addWidget(btn_browse_dl)
 
-        self.btn_download_tasks = QPushButton("Download & Extract Selected (COCO 1.0)")
+        self.btn_download_tasks = QPushButton("Download && Extract Selected (COCO 1.0)")
         self.btn_download_tasks.setProperty("class", "PrimaryButton")
         self.btn_download_tasks.setIcon(get_svg_icon("download", 18))
         self.btn_download_tasks.setIconSize(QSize(18, 18))
@@ -772,7 +1024,7 @@ class MainWindow(QMainWindow):
 
         status_row = QHBoxLayout()
         self.lbl_cvat_status = QLabel("Select tasks above and click Download.")
-        self.lbl_cvat_status.setStyleSheet("color: #64748b; font-weight: 600;")
+        self.lbl_cvat_status.setStyleSheet("color: #6b7f88; font-weight: 600;")
         status_row.addWidget(self.lbl_cvat_status, stretch=1)
 
         self.btn_page1_next = QPushButton("Next: Merge Datasets ➔")
@@ -843,7 +1095,7 @@ class MainWindow(QMainWindow):
         row_dst.addWidget(btn_dst)
         paths_layout.addLayout(row_dst)
 
-        self.btn_run_merge = QPushButton("Merge Datasets (Deduplicate Images & Unify Annotations)")
+        self.btn_run_merge = QPushButton("Merge Datasets (Deduplicate Images && Unify Annotations)")
         self.btn_run_merge.setProperty("class", "PrimaryButton")
         self.btn_run_merge.setIcon(get_svg_icon("step_merge", 18))
         self.btn_run_merge.setIconSize(QSize(18, 18))
@@ -855,7 +1107,7 @@ class MainWindow(QMainWindow):
         paths_layout.addWidget(self.prog_merge)
 
         self.lbl_merge_stats = QLabel("No merged dataset yet.")
-        self.lbl_merge_stats.setStyleSheet("color: #1e293b; font-weight: 600; min-height: 24px;")
+        self.lbl_merge_stats.setStyleSheet("color: #10232b; font-weight: 600; min-height: 24px;")
         paths_layout.addWidget(self.lbl_merge_stats)
 
         layout.addWidget(paths_card)
@@ -908,7 +1160,6 @@ class MainWindow(QMainWindow):
 
         self.rb_mode_det = QRadioButton("Select Detection Mode")
         self.rb_mode_det.setChecked(True)
-        self.rb_mode_det.setStyleSheet("color: #ffffff; font-weight: 700;")
         self.rb_mode_det.toggled.connect(self._on_task_mode_changed)
         card_det_layout.addWidget(self.rb_mode_det)
 
@@ -937,7 +1188,6 @@ class MainWindow(QMainWindow):
         card_seg_layout.addWidget(lbl_seg_sub)
 
         self.rb_mode_seg = QRadioButton("Select Segmentation Mode")
-        self.rb_mode_seg.setStyleSheet("color: #9f1239; font-weight: 700;")
         card_seg_layout.addWidget(self.rb_mode_seg)
 
         choice_row.addWidget(self.card_seg, stretch=1)
@@ -984,7 +1234,7 @@ class MainWindow(QMainWindow):
         cp_layout.addWidget(self.prog_convert)
 
         self.lbl_conv_stats = QLabel("No conversion performed yet.")
-        self.lbl_conv_stats.setStyleSheet("color: #1e293b; font-weight: 600; min-height: 24px;")
+        self.lbl_conv_stats.setStyleSheet("color: #10232b; font-weight: 600; min-height: 24px;")
         cp_layout.addWidget(self.lbl_conv_stats)
 
         layout.addWidget(conv_paths)
@@ -1099,7 +1349,7 @@ class MainWindow(QMainWindow):
         self.chk_all_images.setEnabled(False)
         box_ratios_layout.addWidget(self.chk_all_images, 3, 0, 1, 3)
 
-        self.btn_run_split = QPushButton("Split Dataset & Generate data.yaml")
+        self.btn_run_split = QPushButton("Split Dataset && Generate data.yaml")
         self.btn_run_split.setProperty("class", "PrimaryButton")
         self.btn_run_split.setIcon(get_svg_icon("step_split", 18))
         self.btn_run_split.setIconSize(QSize(18, 18))
@@ -1111,7 +1361,7 @@ class MainWindow(QMainWindow):
         box_ratios_layout.addWidget(self.prog_split, 5, 0, 1, 3)
 
         self.lbl_split_stats = QLabel("No dataset split yet.")
-        self.lbl_split_stats.setStyleSheet("color: #1e293b; font-weight: 600; min-height: 24px;")
+        self.lbl_split_stats.setStyleSheet("color: #10232b; font-weight: 600; min-height: 24px;")
         box_ratios_layout.addWidget(self.lbl_split_stats, 6, 0, 1, 3)
 
         layout.addWidget(ratios_card)
@@ -1234,7 +1484,7 @@ class MainWindow(QMainWindow):
 
         # Output preview notice (In-place weights renaming inside runs/)
         self.lbl_run_preview = QLabel("Output Preview: runs/detect/my_yolo_model_v1/weights/my_yolo_model_v1.pt")
-        self.lbl_run_preview.setStyleSheet("color: #0f766e; font-weight: 700; background: #f0fdfa; padding: 6px 12px; border-radius: 8px;")
+        self.lbl_run_preview.setProperty("class", "RunPreview")
         h_layout.addWidget(self.lbl_run_preview, 6, 0, 1, 7)
 
         layout.addWidget(train_card)
@@ -1269,7 +1519,7 @@ class MainWindow(QMainWindow):
         exec_layout.addWidget(self.prog_train)
 
         self.lbl_train_metrics = QLabel("Waiting to begin training session...")
-        self.lbl_train_metrics.setStyleSheet("color: #1e293b; font-weight: 600;")
+        self.lbl_train_metrics.setStyleSheet("color: #10232b; font-weight: 600;")
         exec_layout.addWidget(self.lbl_train_metrics)
 
         # Splitter between log and yaml preview
@@ -1399,7 +1649,7 @@ class MainWindow(QMainWindow):
         # 5. Save results checkbox & destination folder
         self.chk_save_test = QCheckBox("Save Test Prediction Results")
         self.chk_save_test.setChecked(True)
-        self.chk_save_test.setStyleSheet("font-weight: 700; color: #0f3747;")
+        self.chk_save_test.setStyleSheet("font-weight: 700; color: #0e4b5a;")
         cg_layout.addWidget(self.chk_save_test, 4, 0)
 
         self.txt_test_save_dir = QLineEdit(str(self.test_results_dir))
@@ -1441,7 +1691,7 @@ class MainWindow(QMainWindow):
         cg_layout.addWidget(self.prog_test, 6, 0, 1, 6)
 
         self.lbl_test_status = QLabel("Select model weights and input source above, then click 'Run Model Test / Predict'.")
-        self.lbl_test_status.setStyleSheet("color: #64748b; font-weight: 600;")
+        self.lbl_test_status.setStyleSheet("color: #6b7f88; font-weight: 600;")
         cg_layout.addWidget(self.lbl_test_status, 7, 0, 1, 6)
 
         layout.addWidget(cfg_card)
@@ -1457,7 +1707,7 @@ class MainWindow(QMainWindow):
         canvas_col = QVBoxLayout()
         canvas_top = QHBoxLayout()
         lbl_canvas_title = QLabel("Prediction Visual Preview")
-        lbl_canvas_title.setStyleSheet("font-weight: 700; color: #0f3747; font-size: 14px;")
+        lbl_canvas_title.setProperty("class", "SectionTitle")
         canvas_top.addWidget(lbl_canvas_title)
         canvas_top.addStretch()
 
@@ -1468,7 +1718,7 @@ class MainWindow(QMainWindow):
         canvas_top.addWidget(self.btn_prev_test_img)
 
         self.lbl_test_img_counter = QLabel("0 / 0")
-        self.lbl_test_img_counter.setStyleSheet("font-weight: 700; color: #475569;")
+        self.lbl_test_img_counter.setStyleSheet("font-weight: 700; color: #24363d;")
         canvas_top.addWidget(self.lbl_test_img_counter)
 
         self.btn_next_test_img = QPushButton("Next >")
@@ -1480,13 +1730,13 @@ class MainWindow(QMainWindow):
 
         # Canvas Frame
         canvas_frame = QFrame()
-        canvas_frame.setStyleSheet("background-color: #0f172a; border-radius: 12px; border: 1.5px solid #334155;")
+        canvas_frame.setObjectName("testCanvas")
         cf_layout = QVBoxLayout(canvas_frame)
         cf_layout.setContentsMargins(4, 4, 4, 4)
 
         self.lbl_test_preview = QLabel("Visual evaluation result will appear here")
         self.lbl_test_preview.setAlignment(Qt.AlignCenter)
-        self.lbl_test_preview.setStyleSheet("color: #94a3b8; font-weight: 600;")
+        self.lbl_test_preview.setObjectName("testPreview")
         self.lbl_test_preview.setMinimumSize(480, 300)
         cf_layout.addWidget(self.lbl_test_preview)
         canvas_col.addWidget(canvas_frame, stretch=1)
@@ -1496,11 +1746,11 @@ class MainWindow(QMainWindow):
         # Right: Detection Summary & Table
         table_col = QVBoxLayout()
         lbl_det_table_title = QLabel("Detected Objects & Metrics")
-        lbl_det_table_title.setStyleSheet("font-weight: 700; color: #0f3747; font-size: 14px;")
+        lbl_det_table_title.setProperty("class", "SectionTitle")
         table_col.addWidget(lbl_det_table_title)
 
         self.lbl_test_classes_badge = QLabel("No detections yet")
-        self.lbl_test_classes_badge.setStyleSheet("color: #64748b; font-weight: 600; padding: 4px;")
+        self.lbl_test_classes_badge.setStyleSheet("color: #6b7f88; font-weight: 600; padding: 4px;")
         self.lbl_test_classes_badge.setWordWrap(True)
         table_col.addWidget(self.lbl_test_classes_badge)
 
@@ -1544,6 +1794,11 @@ class MainWindow(QMainWindow):
             btn.style().unpolish(btn)
             btn.style().polish(btn)
 
+        for idx, pill in enumerate(getattr(self, "step_pills", [])):
+            pill.setProperty("class", "StepPillActive" if idx == step_idx else "StepPill")
+            pill.style().unpolish(pill)
+            pill.style().polish(pill)
+
         # Update Guide Box
         self.lbl_guide.setText(self.STEP_GUIDES[step_idx])
 
@@ -1575,6 +1830,17 @@ class MainWindow(QMainWindow):
     # -----------------------------------------------------------------
     # Authentication & Login Flow Slots
     # -----------------------------------------------------------------
+    def _toggle_password_visibility(self):
+        """Toggle password visibility between masked and clear text."""
+        if self.txt_login_pass.echoMode() == QLineEdit.Password:
+            self.txt_login_pass.setEchoMode(QLineEdit.Normal)
+            self.btn_toggle_pass.setIcon(get_svg_icon("eye", 20))
+            self.btn_toggle_pass.setToolTip("Hide Password (ซ่อนรหัสผ่าน)")
+        else:
+            self.txt_login_pass.setEchoMode(QLineEdit.Password)
+            self.btn_toggle_pass.setIcon(get_svg_icon("eye_off", 20))
+            self.btn_toggle_pass.setToolTip("Show Password (แสดงรหัสผ่าน)")
+
     def _on_do_login(self):
         url = self.txt_login_url.text().strip()
         user = self.txt_login_user.text().strip()
@@ -1603,7 +1869,7 @@ class MainWindow(QMainWindow):
         server_url = login_info.get("server_url") or self.txt_login_url.text().strip()
 
         # Update Studio Header Profile Badge
-        self.lbl_user_badge.setText(f"👤 {username} @ {server_url} • {len(tasks)} tasks available")
+        self.lbl_user_badge.setText(f"{username} @ {server_url} • {len(tasks)} tasks available")
 
         # Populate projects dropdown in Step 1
         self.cmb_proj_filter.blockSignals(True)
@@ -1624,14 +1890,14 @@ class MainWindow(QMainWindow):
 
     def _on_auth_error(self, err_msg: str):
         self.btn_do_login.setEnabled(True)
-        self.login_mascot.set_state(DancingSvgMascot.STATE_IDLE)
+        self.login_mascot.set_state(DancingSvgMascot.STATE_ERROR)
         self.lbl_login_status.setText("")
         self.lbl_login_alert.setText(f"Connection Failed: {err_msg}")
         self.lbl_login_alert.show()
 
     def _on_skip_login(self):
         """Allows direct entry to studio for local dataset processing."""
-        self.lbl_user_badge.setText("👤 Local Mode (Offline Dataset Processing)")
+        self.lbl_user_badge.setText("Local Mode (Offline Dataset Processing)")
         self.root_stack.setCurrentIndex(1)
         self.studio_mascot.set_state(DancingSvgMascot.STATE_IDLE)
         self._go_to_step(0)
@@ -1768,7 +2034,7 @@ class MainWindow(QMainWindow):
 
     def _on_download_error(self, err_msg: str):
         self.btn_download_tasks.setEnabled(True)
-        self.studio_mascot.set_state(DancingSvgMascot.STATE_IDLE)
+        self.studio_mascot.set_state(DancingSvgMascot.STATE_ERROR)
         self.lbl_cvat_status.setText(f"Error: {err_msg}")
         QMessageBox.critical(self, "Download Error", f"Task download failed:\n{err_msg}")
 
@@ -1810,7 +2076,7 @@ class MainWindow(QMainWindow):
 
     def _on_merge_error(self, err_msg: str):
         self.btn_run_merge.setEnabled(True)
-        self.studio_mascot.set_state(DancingSvgMascot.STATE_IDLE)
+        self.studio_mascot.set_state(DancingSvgMascot.STATE_ERROR)
         self.lbl_merge_stats.setText(f"Merge Error: {err_msg}")
         QMessageBox.critical(self, "Merge Error", f"Merge failed:\n{err_msg}")
 
@@ -1821,10 +2087,8 @@ class MainWindow(QMainWindow):
         is_det = self.rb_mode_det.isChecked()
         self.card_det.setProperty("class", "ChoiceCardNavy" if is_det else "ChoiceCardPink")
         self.card_seg.setProperty("class", "ChoiceCardPink" if is_det else "ChoiceCardNavy")
-        self.card_det.style().unpolish(self.card_det)
-        self.card_det.style().polish(self.card_det)
-        self.card_seg.style().unpolish(self.card_seg)
-        self.card_seg.style().polish(self.card_seg)
+        self._repolish(self.card_det)
+        self._repolish(self.card_seg)
 
     def _on_run_convert(self):
         json_path = Path(self.txt_conv_json.text().strip())
@@ -1861,7 +2125,7 @@ class MainWindow(QMainWindow):
 
     def _on_convert_error(self, err_msg: str):
         self.btn_run_convert.setEnabled(True)
-        self.studio_mascot.set_state(DancingSvgMascot.STATE_IDLE)
+        self.studio_mascot.set_state(DancingSvgMascot.STATE_ERROR)
         self.lbl_conv_stats.setText(f"Conversion Error: {err_msg}")
         QMessageBox.critical(self, "Conversion Error", f"Conversion failed:\n{err_msg}")
 
@@ -1917,7 +2181,7 @@ class MainWindow(QMainWindow):
 
     def _on_split_error(self, err_msg: str):
         self.btn_run_split.setEnabled(True)
-        self.studio_mascot.set_state(DancingSvgMascot.STATE_IDLE)
+        self.studio_mascot.set_state(DancingSvgMascot.STATE_ERROR)
         self.lbl_split_stats.setText(f"Split Error: {err_msg}")
         QMessageBox.critical(self, "Split Error", f"Split failed:\n{err_msg}")
 
@@ -2059,7 +2323,7 @@ class MainWindow(QMainWindow):
     def _on_train_error(self, err_msg: str):
         self.btn_start_train.setEnabled(True)
         self.btn_stop_train.setEnabled(False)
-        self.studio_mascot.set_state(DancingSvgMascot.STATE_IDLE)
+        self.studio_mascot.set_state(DancingSvgMascot.STATE_ERROR)
         self.txt_train_log.appendPlainText(f"\n❌ Training Error: {err_msg}")
         QMessageBox.critical(self, "Training Error", f"Training encountered an error:\n{err_msg}")
 
@@ -2281,7 +2545,7 @@ class MainWindow(QMainWindow):
     def _on_test_error(self, err_msg: str):
         self.btn_run_test.setEnabled(True)
         self.btn_stop_test.setEnabled(False)
-        self.studio_mascot.set_state(DancingSvgMascot.STATE_IDLE)
+        self.studio_mascot.set_state(DancingSvgMascot.STATE_ERROR)
         self.lbl_test_status.setText(f"Test Error: {err_msg}")
         QMessageBox.critical(self, "Inference Error", f"Model testing encountered an error:\n{err_msg}")
 
