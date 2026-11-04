@@ -36,7 +36,7 @@ from core.cvat_client import CvatClientWrapper, sanitize_filename
 from core.merger import CocoDatasetMerger
 from core.converter import CocoToYoloConverter
 from core.splitter import DatasetSplitter
-from core.trainer import YoloTrainerEngine, auto_tune_hyperparameters, get_next_run_version
+from core.trainer import YoloTrainerEngine, auto_tune_hyperparameters, get_next_run_version, resolve_model_path
 from core.tester import YoloTestEngine, IMAGE_EXTS, VIDEO_EXTS
 from core.evaluator import (
     dataset_stats, read_training_results, validate_on_split, evaluate_external,
@@ -231,8 +231,10 @@ class TrainWorker(QThread):
     finished_signal = pyqtSignal(dict)
     error_signal = pyqtSignal(str)
 
-    def __init__(self, engine: YoloTrainerEngine, task: str, model_name: str, data_yaml: Path, run_name: str, base_dir: Path, hyperparams: dict):
+    def __init__(self, engine: YoloTrainerEngine, task: str, model_name: str, data_yaml: Path, run_name: str, base_dir: Path,
+                 hyperparams: dict, models_dir: Path | None = None):
         super().__init__()
+        self.models_dir = models_dir
         self.engine = engine
         self.task = task
         self.model_name = model_name
@@ -257,7 +259,8 @@ class TrainWorker(QThread):
                 base_runs_dir=self.base_dir,
                 hyperparams=self.hyperparams,
                 log_callback=log_cb,
-                epoch_callback=epoch_cb
+                epoch_callback=epoch_cb,
+                models_dir=self.models_dir,
             )
             res["report_data"] = self._collect_report(res, log_cb)
             self.finished_signal.emit(res)
@@ -427,9 +430,10 @@ class MainWindow(QMainWindow):
         self.app_dir = Path("C:/Articulus/cvat").resolve()
         self.data_dir = self.app_dir / "data"
         self.runs_dir = self.app_dir / "runs"
+        self.models_dir = self.app_dir / "models"   # base weights (yolo11n.pt, yolo26x.pt …) are kept here
         self.test_results_dir = self.data_dir / "test_results"
 
-        for d in [self.data_dir, self.runs_dir, self.test_results_dir]:
+        for d in [self.data_dir, self.runs_dir, self.test_results_dir, self.models_dir]:
             d.mkdir(parents=True, exist_ok=True)
 
         # State Engines
@@ -1516,6 +1520,21 @@ class MainWindow(QMainWindow):
         btn_browse_pt.clicked.connect(self._browse_model_pt)
         h_layout.addWidget(btn_browse_pt, 0, 6)
 
+        self.cmb_model_preset.currentIndexChanged.connect(lambda _: self._update_model_file_label())
+        self.txt_custom_model.textChanged.connect(lambda _: self._update_model_file_label())
+
+        model_row = QHBoxLayout()
+        self.lbl_model_file = QLabel("")
+        self.lbl_model_file.setProperty("class", "MutedText")
+        self.lbl_model_file.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        model_row.addWidget(self.lbl_model_file, 1)
+        btn_models_dir = QPushButton("models/ Folder")
+        btn_models_dir.setIcon(get_svg_icon("folder", 16))
+        btn_models_dir.setIconSize(QSize(16, 16))
+        btn_models_dir.clicked.connect(lambda: self._open_dir(self.models_dir))
+        model_row.addWidget(btn_models_dir)
+        h_layout.addLayout(model_row, 7, 0, 1, 7)
+
         h_layout.addWidget(QLabel("data.yaml Path:"), 1, 0)
         self.txt_data_yaml = QLineEdit(str(self.data_dir / "data.yaml"))
         h_layout.addWidget(self.txt_data_yaml, 1, 1, 1, 5)
@@ -2541,16 +2560,38 @@ class MainWindow(QMainWindow):
             presets = [
                 "yolo11n.pt", "yolo11s.pt", "yolo11m.pt", "yolo11l.pt",
                 "yolov8n.pt", "yolov8s.pt", "yolov8m.pt",
-                "yolo26n.pt", "yolo26s.pt", "yolo26m.pt", "yolo26l.pt"
+                "yolo26n.pt", "yolo26s.pt", "yolo26m.pt", "yolo26l.pt", "yolo26x.pt"
             ]
         else:
             presets = [
                 "yolo11n-seg.pt", "yolo11s-seg.pt", "yolo11m-seg.pt", "yolo11l-seg.pt",
                 "yolov8n-seg.pt", "yolov8s-seg.pt", "yolov8m-seg.pt",
-                "yolo26n-seg.pt", "yolo26s-seg.pt", "yolo26m-seg.pt", "yolo26l-seg.pt"
+                "yolo26n-seg.pt", "yolo26s-seg.pt", "yolo26m-seg.pt", "yolo26l-seg.pt", "yolo26x-seg.pt"
             ]
         self.cmb_model_preset.addItems(presets)
         self._update_run_preview()
+        self._update_model_file_label()
+
+    def _selected_base_model(self) -> str:
+        custom = self.txt_custom_model.text().strip()
+        return custom if custom else self.cmb_model_preset.currentText()
+
+    def _update_model_file_label(self):
+        if not hasattr(self, "lbl_model_file"):
+            return
+        custom = self.txt_custom_model.text().strip()
+        if custom:
+            ok = Path(custom).exists()
+            self.lbl_model_file.setText(f"Base model (custom): {custom}" + ("" if ok else "   ⚠ file not found"))
+            return
+        name = self.cmb_model_preset.currentText()
+        if not name:
+            return
+        path = Path(resolve_model_path(name, self.models_dir))
+        if path.exists():
+            self.lbl_model_file.setText(f"Base model: {path}   ✓ downloaded ({path.stat().st_size / 1e6:.0f} MB)")
+        else:
+            self.lbl_model_file.setText(f"Base model: {path}   — will be downloaded on first training")
 
     def _update_run_preview(self):
         task = self.cmb_train_task.currentText()
@@ -2595,7 +2636,12 @@ class MainWindow(QMainWindow):
 
         task = self.cmb_train_task.currentText()
         custom_pt = self.txt_custom_model.text().strip()
-        model_name = custom_pt if (custom_pt and Path(custom_pt).exists()) else self.cmb_model_preset.currentText()
+        if custom_pt and not Path(custom_pt).exists():
+            QMessageBox.warning(self, "Custom Model Not Found",
+                                f"The custom weights file does not exist:\n{custom_pt}\n\n"
+                                "Fix the path, or clear the field to use the selected preset.")
+            return
+        model_name = custom_pt if custom_pt else self.cmb_model_preset.currentText()
         run_name = self.txt_custom_run_name.text().strip() or "yolo_model"
         base_runs_dir = Path(self.txt_runs_base.text().strip())
 
@@ -2617,7 +2663,8 @@ class MainWindow(QMainWindow):
         self.studio_mascot.set_state(DancingSvgMascot.STATE_TRAINING)
 
         self.active_worker = TrainWorker(
-            self.trainer_engine, task, model_name, yaml_path, run_name, base_runs_dir, hyperparams
+            self.trainer_engine, task, model_name, yaml_path, run_name, base_runs_dir, hyperparams,
+            models_dir=self.models_dir,
         )
         self.active_worker.log_signal.connect(self._append_train_log)
         self.active_worker.epoch_signal.connect(self._on_train_epoch)
@@ -2648,6 +2695,7 @@ class MainWindow(QMainWindow):
         self.studio_mascot.set_state(DancingSvgMascot.STATE_SUCCESS)
         self.prog_train.setValue(self.prog_train.maximum())
         self._update_run_preview()
+        self._update_model_file_label()
 
         run_dir = res.get("run_dir")
         best_pt = res.get("best_pt")
@@ -3156,7 +3204,8 @@ class MainWindow(QMainWindow):
             target_line_edit.setText(f)
 
     def _browse_model_pt(self):
-        f, _ = QFileDialog.getOpenFileName(self, "Select YOLO Model Weights", "", "PyTorch Weights (*.pt)")
+        start = str(self.models_dir if self.models_dir.exists() else self.runs_dir)
+        f, _ = QFileDialog.getOpenFileName(self, "Select YOLO Model Weights", start, "PyTorch Weights (*.pt)")
         if f:
             self.txt_custom_model.setText(f)
 

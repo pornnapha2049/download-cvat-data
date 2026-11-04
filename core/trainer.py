@@ -104,6 +104,20 @@ def get_next_run_version(base_runs_dir: Path, custom_name: str) -> tuple[str, Pa
         version += 1
 
 
+def resolve_model_path(model_name_or_path: str, models_dir: typing.Optional[Path] = None) -> str:
+    """
+    Existing file path -> used as is (custom .pt).
+    Preset name (e.g. 'yolo26x.pt') -> <models_dir>/<name>. Ultralytics downloads the official
+    weights straight into that path the first time, and re-uses the file afterwards.
+    """
+    p = Path(model_name_or_path)
+    if p.exists() or models_dir is None or p.parent != Path("."):
+        return str(p)
+    models_dir = Path(models_dir)
+    models_dir.mkdir(parents=True, exist_ok=True)
+    return str(models_dir / p.name)
+
+
 class YoloTrainerEngine:
     """Manages YOLO model training, progress tracking, and weights naming."""
 
@@ -131,6 +145,7 @@ class YoloTrainerEngine:
         hyperparams: dict,
         log_callback: typing.Optional[typing.Callable[[str], None]] = None,
         epoch_callback: typing.Optional[typing.Callable[[int, int, dict], None]] = None,
+        models_dir: typing.Optional[Path] = None,
     ) -> dict:
         """
         Executes YOLO training session.
@@ -163,13 +178,12 @@ class YoloTrainerEngine:
 
         # Resolve model name: if user picked custom or YOLO26 preset that doesn't exist yet,
         # provide fallback or notify
-        model_resolved = model_name_or_path
-        if not Path(model_resolved).exists() and ("26" in model_resolved):
-            # YOLO26 placeholder alias fallback to YOLO11 if weights not locally present
-            fallback = "yolo11n-seg.pt" if task == "segment" else "yolo11n.pt"
-            if log_callback:
-                log_callback(f"ℹ️ '{model_name_or_path}' not found locally. Using base '{fallback}' architecture.")
-            model_resolved = fallback
+        model_resolved = resolve_model_path(model_name_or_path, models_dir)
+        if log_callback:
+            if Path(model_resolved).exists():
+                log_callback(f"📁 Base weights: {model_resolved}")
+            else:
+                log_callback(f"⬇️ Downloading '{Path(model_resolved).name}' into {Path(model_resolved).parent} (first use only)...")
 
         model = YOLO(model_resolved)
 
