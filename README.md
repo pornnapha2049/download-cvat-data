@@ -45,18 +45,18 @@
    - **Custom Named Best Weights**: บันทึกและคัดลอกไฟล์ `best.pt` เป็น `{custom_name}.pt` ไว้ในโฟลเดอร์ `weights/` ทันทีหลัง Train เสร็จ
    - ปุ่ม Stop Training สำหรับสั่งหยุด Train อย่างปลอดภัยได้ตลอดเวลา
 
-6. **การออกแบบสไตล์ Aesthetic Printable Stickers & Study Stationery (.☘︎ ݁˖)**:
-   - ดีไซน์สวยละมุนตา อิงตามคอนเซปต์ **Aesthetic Journal & Study Stationery Cards**:
-     - โทนสีอบอุ่น: **Warm Cream Paper (#fbf8f2)**, **Matcha Sage Green (#587b5a)**, **Honey Butter (#e8b056)** และ **Soft Terracotta (#c85a54)**
-     - การ์ดและปุ่มกดสไตล์ Printable Stickers ขอบมนนุ่มนวล พร้อมเส้นประ Washi Tape
+6. **ดีไซน์สไตล์ Mindfulness, Pastel Wellness & Study Stationery (SVG ทุกไอคอน)**:
+   - ออกแบบตามสไตล์ UI สุขภาพจิตและการเรียนที่สบายตา อิงตาม [Pinterest Design](https://i.pinimg.com/1200x/69/a3/a3/69a3a365c2017d08d2c1ce4795633dd5.jpg):
+     - โทนสีสงบ ละมุนตา: **Soft Slate-Cream (#f0f4f8)**, **Crisp White Cards (#ffffff)**, **Deep Slate Navy (#132c3f)**, **Matcha Mint (#daf0dd)**, **Lavender Rose (#fde4ed)** และ **Butter Yellow (#fef3d1)**
+     - การ์ดขอบมนนุ่มนวล (16px - 20px) พร้อมเงาบางเบาและปุ่มทรง Pill ทันสมัย
+   - **ไอคอนทุกตัวในระบบเขียนเป็น SVG เวกเตอร์แท้ 100% (`ui/svg_icons.py`)**:
+     - เส้นขอบคมชัด สไตล์มินิมอล ลายเส้นโค้งมน พร้อมเฉดสีพาสเทล
+     - ออกแบบไอคอนเฉพาะทาง: **Lotus in Bowl**, **Zen Balance Stones**, **Mind Detox Brain**, **Gratitude Sunburst**, **Notification Bell**, **Bar Charts**, **Circular Arrow Pills**, **Cloud Download**, **Merge Streams**, **Magic Convert Wand**, **Split Cards**, **Rocket Trainer**
+     - รองรับการเรนเดอร์ High-DPI คมชัดทุกขนาดหน้าจอ พร้อมระบบ In-memory Caching
    - แบ่งขั้นตอนการทำงานออกเป็น **5 หน้า (Steps)** อย่างชัดเจน:
-     - `☘︎ 1. Task Explorer` ➔ `🧩 2. Merge & Convert` ➔ `✂️ 3. Dataset Splitter` ➔ `🧠 4. YOLO Auto-Trainer` ➔ `☕ 5. Runs & Explorer`
-   - **Interactive Stepper Bar**: ด้านบนแสดงปุ่มขั้นตอนทั้ง 5 ในรูปแบบแท็กสติกเกอร์
-   - **Byte's Cozy Note**: กล่องข้อความแนะนำคำสั่งสไตล์กระดาษโน้ต
-   - ตกแต่งด้วย **Dancing SVG Mascot ("Clover Byte" .☘︎ ݁˖)**:
-     - น้องบัดดี้แก้มชมพูระเรื่อ กระพริบตากลมโต ดิ้นดุ๊กดิ๊กพร้อม **ต้นกล้าใบโคลเวอร์ 4 แฉก (☘︎)** บนหัวที่แกว่งไหวตามจังหวะ
-     - ปรับเปลี่ยนแอนิเมชันตามการทำงาน: ดาวน์โหลดละอองดาว, หมุนดอกไม้ประมวลผล, แอปเปิ้ลแดง 🍎 และกระโดดดีใจพร้อมประกายดาว ⭐
-   - สลับเปิด/ปิดแอนิเมชันได้
+     - `1. Task Explorer` ➔ `2. Merge & Convert` ➔ `3. Dataset Splitter` ➔ `4. YOLO Auto-Trainer` ➔ `5. Runs & Explorer`
+   - **Interactive Stepper Bar**: ด้านบนแสดงปุ่มขั้นตอนทั้ง 5 พร้อมไอคอน SVG ประจำแต่ละขั้นตอน
+   - ตกแต่งด้วย **Dancing SVG Mascot ("Clover Byte" .☘︎ ݁˖)** ดิ้นโบกมือและเปลี่ยนท่าทางตามสถานะการทำงานแบบเรียลไทม์
 
 ---
 
@@ -75,8 +75,9 @@ C:\Articulus\cvat\
 │   └── trainer.py             # YOLO Training engine, Auto-tuning, Patience, Run versioning
 └── ui/
     ├── __init__.py
+    ├── svg_icons.py           # คลังไอคอน SVG เวกเตอร์แท้ สไตล์ Mindfulness & Pastel Wellness
     ├── dancing_svg.py         # SVG Mascot ดิ้นได้ & Animated Activity Pills
-    ├── theme.py               # ธีม Dark Cyberpunk หรูหรา สไตล์ Glassmorphism
+    ├── theme.py               # ธีม Mindfulness & Pastel Wellness สบายตา
     └── main_window.py         # หน้าต่างหลัก รวม 5 แท็บการทำงานอย่างเป็นระบบ
 ```
 

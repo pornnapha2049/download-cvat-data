@@ -24,7 +24,7 @@ from PyQt5.QtWidgets import (
     QTableWidget, QTableWidgetItem, QHeaderView, QFileDialog, QMessageBox,
     QProgressBar, QPlainTextEdit, QFrame, QGroupBox, QScrollArea
 )
-from PyQt5.QtCore import Qt, QThread, pyqtSignal
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize
 
 from core.cvat_client import CvatClientWrapper, sanitize_filename
 from core.merger import CocoDatasetMerger
@@ -33,6 +33,7 @@ from core.splitter import DatasetSplitter
 from core.trainer import YoloTrainerEngine, auto_tune_hyperparameters, get_next_run_version
 from ui.dancing_svg import DancingSvgMascot, AnimatedWavePill
 from ui.theme import DARK_STYLESHEET
+from ui.svg_icons import get_svg_icon, get_svg_pixmap
 
 
 # =====================================================================
@@ -260,11 +261,11 @@ class TrainWorker(QThread):
 
 class MainWindow(QMainWindow):
     STEP_DESCRIPTIONS = [
-        ("Step 1: Task Explorer", "☘︎ สำรวจและดาวน์โหลด Tasks (COCO 1.0 + Clean /images/default)"),
-        ("Step 2: Merge & Convert", "🧩 รวม Datasets เข้าด้วยกัน & แปลง COCO เป็น YOLO (Det/Seg)"),
-        ("Step 3: Split Dataset", "✂️ แบ่ง Train/Val/Test โดยนำทุกรูปภาพเข้าร่วม (รวม Backgrounds)"),
-        ("Step 4: YOLO Training", "🧠 ปรับ Auto-Tune Hyperparameters & เริ่ม Train พร้อม Early Stopping"),
-        ("Step 5: Runs & Explorer", "☕ สำรวจผลลัพธ์การเทรน ตรวจสอบ weights และ data.yaml"),
+        ("Step 1: Task Explorer", "สำรวจและดาวน์โหลด Tasks (COCO 1.0 + Clean /images/default)"),
+        ("Step 2: Merge & Convert", "รวม Datasets เข้าด้วยกัน & แปลง COCO เป็น YOLO (Det/Seg)"),
+        ("Step 3: Split Dataset", "แบ่ง Train/Val/Test โดยนำทุกรูปภาพเข้าร่วม (รวม Backgrounds)"),
+        ("Step 4: YOLO Training", "ปรับ Auto-Tune Hyperparameters & เริ่ม Train พร้อม Early Stopping"),
+        ("Step 5: Runs & Explorer", "สำรวจผลลัพธ์การเทรน ตรวจสอบ weights และ data.yaml"),
     ]
 
     STEP_GUIDES = [
@@ -389,14 +390,14 @@ class MainWindow(QMainWindow):
 
         # Form Inputs
         lbl_url = QLabel("CVAT Server URL:")
-        lbl_url.setStyleSheet("font-weight: 600; color: #736154;")
+        lbl_url.setStyleSheet("font-weight: 700; color: #1e293b;")
         card_layout.addWidget(lbl_url)
         self.txt_login_url = QLineEdit("http://1.10.131.222:8080/projects")
         self.txt_login_url.setProperty("class", "LoginInput")
         card_layout.addWidget(self.txt_login_url)
 
         lbl_user = QLabel("Username:")
-        lbl_user.setStyleSheet("font-weight: 600; color: #736154;")
+        lbl_user.setStyleSheet("font-weight: 700; color: #1e293b;")
         card_layout.addWidget(lbl_user)
         self.txt_login_user = QLineEdit()
         self.txt_login_user.setPlaceholderText("Enter your CVAT username")
@@ -404,7 +405,7 @@ class MainWindow(QMainWindow):
         card_layout.addWidget(self.txt_login_user)
 
         lbl_pass = QLabel("Password:")
-        lbl_pass.setStyleSheet("font-weight: 600; color: #736154;")
+        lbl_pass.setStyleSheet("font-weight: 700; color: #1e293b;")
         card_layout.addWidget(lbl_pass)
         self.txt_login_pass = QLineEdit()
         self.txt_login_pass.setEchoMode(QLineEdit.Password)
@@ -416,20 +417,24 @@ class MainWindow(QMainWindow):
         # Status Label
         self.lbl_login_status = QLabel("")
         self.lbl_login_status.setAlignment(Qt.AlignCenter)
-        self.lbl_login_status.setStyleSheet("color: #5e8460; font-weight: 700;")
+        self.lbl_login_status.setStyleSheet("color: #166534; font-weight: 700;")
         card_layout.addWidget(self.lbl_login_status)
 
         # Login Action Button
-        self.btn_do_login = QPushButton("☘︎ Sign In & Launch Studio")
+        self.btn_do_login = QPushButton("Sign In & Launch Studio")
         self.btn_do_login.setProperty("class", "LoginButton")
+        self.btn_do_login.setIcon(get_svg_icon("key", 20))
+        self.btn_do_login.setIconSize(QSize(20, 20))
         self.btn_do_login.setCursor(Qt.PointingHandCursor)
         self.btn_do_login.clicked.connect(self._on_do_login)
         card_layout.addWidget(self.btn_do_login)
 
         # Offline / Local Dataset Skip Button
         card_layout.addSpacing(4)
-        btn_skip = QPushButton("📁 Work with Local Datasets (Skip Login / Offline Mode)")
+        btn_skip = QPushButton("Work with Local Datasets (Skip Login / Offline Mode)")
         btn_skip.setProperty("class", "SkipLoginButton")
+        btn_skip.setIcon(get_svg_icon("folder", 18))
+        btn_skip.setIconSize(QSize(18, 18))
         btn_skip.setCursor(Qt.PointingHandCursor)
         btn_skip.clicked.connect(self._on_skip_login)
         card_layout.addWidget(btn_skip, alignment=Qt.AlignCenter)
@@ -517,20 +522,30 @@ class MainWindow(QMainWindow):
 
         # Profile & Status Row
         profile_row = QHBoxLayout()
-        self.lbl_user_badge = QLabel("👤 Connected: Anonymous")
-        self.lbl_user_badge.setStyleSheet("color: #355737; font-weight: 700; font-size: 12px; min-height: 20px;")
+        self.lbl_user_icon = QLabel()
+        self.lbl_user_icon.setPixmap(get_svg_pixmap("user", 18, 18))
+        profile_row.addWidget(self.lbl_user_icon)
+
+        self.lbl_user_badge = QLabel("Connected: Anonymous")
+        self.lbl_user_badge.setStyleSheet("color: #166534; font-weight: 700; font-size: 12px; min-height: 20px;")
         profile_row.addWidget(self.lbl_user_badge)
 
-        btn_logout = QPushButton("🚪 Logout")
+        btn_logout = QPushButton("Logout")
         btn_logout.setProperty("class", "LogoutButton")
+        btn_logout.setIcon(get_svg_icon("logout", 15))
+        btn_logout.setIconSize(QSize(15, 15))
         btn_logout.setCursor(Qt.PointingHandCursor)
         btn_logout.clicked.connect(self._on_logout)
         profile_row.addWidget(btn_logout)
 
-        profile_row.addSpacing(12)
+        profile_row.addSpacing(14)
+
+        self.lbl_hw_icon = QLabel()
+        self.lbl_hw_icon.setPixmap(get_svg_pixmap("hardware", 18, 18))
+        profile_row.addWidget(self.lbl_hw_icon)
 
         cuda_ok = torch.cuda.is_available()
-        hw_text = f"Hardware: {'⚡ NVIDIA GPU (' + torch.cuda.get_device_name(0) + ')' if cuda_ok else '💻 CPU Mode'}"
+        hw_text = f"{'NVIDIA GPU (' + torch.cuda.get_device_name(0) + ')' if cuda_ok else 'CPU Mode'}"
         self.hw_badge = QLabel(hw_text)
         self.hw_badge.setProperty("class", "BadgeSuccess" if cuda_ok else "BadgeInfo")
         profile_row.addWidget(self.hw_badge)
@@ -547,7 +562,7 @@ class MainWindow(QMainWindow):
         self.mascot = DancingSvgMascot(size=105)
         mascot_box.addWidget(self.mascot, alignment=Qt.AlignCenter)
 
-        self.chk_mascot = QCheckBox("✨ SVG Mascot")
+        self.chk_mascot = QCheckBox("SVG Mascot")
         self.chk_mascot.setChecked(True)
         self.chk_mascot.toggled.connect(self.mascot.toggle_animation)
         mascot_box.addWidget(self.chk_mascot, alignment=Qt.AlignCenter)
@@ -566,17 +581,19 @@ class MainWindow(QMainWindow):
         layout.setSpacing(6)
 
         self.step_buttons: list[QPushButton] = []
-        step_titles = [
-            ("☘︎ 1. Task Explorer", "Fetch & Flatten Images"),
-            ("🧩 2. Merge & Convert", "COCO 1.0 to YOLO"),
-            ("✂️ 3. Dataset Splitter", "Train/Val/Test All Imgs"),
-            ("🧠 4. YOLO Auto-Trainer", "Auto-Tune & Train Model"),
-            ("☕ 5. Runs & Explorer", "Explore Weights & Logs"),
+        step_config = [
+            ("step_cvat", "1. Task Explorer", "Fetch & Flatten Images"),
+            ("step_merge", "2. Merge & Convert", "COCO 1.0 to YOLO"),
+            ("step_split", "3. Dataset Splitter", "Train/Val/Test All Imgs"),
+            ("brain", "4. YOLO Auto-Trainer", "Auto-Tune & Train Model"),
+            ("lotus", "5. Runs & Explorer", "Explore Weights & Logs"),
         ]
 
-        for idx, (title, sub) in enumerate(step_titles):
+        for idx, (icon_name, title, sub) in enumerate(step_config):
             btn = QPushButton()
             btn.setProperty("class", "StepButton")
+            btn.setIcon(get_svg_icon(icon_name, 26))
+            btn.setIconSize(QSize(26, 26))
             btn.setText(f"{title}\n{sub}")
             btn.setCursor(Qt.PointingHandCursor)
             btn.clicked.connect(lambda checked, step_idx=idx: self._go_to_step(step_idx))
@@ -616,11 +633,17 @@ class MainWindow(QMainWindow):
         conn_layout = QHBoxLayout(conn_card)
         conn_layout.setContentsMargins(14, 8, 14, 8)
 
+        lbl_srv_icon = QLabel()
+        lbl_srv_icon.setPixmap(get_svg_pixmap("server", 18, 18))
+        conn_layout.addWidget(lbl_srv_icon)
+
         self.lbl_server_info = QLabel("Connected Server: http://1.10.131.222:8080")
-        self.lbl_server_info.setStyleSheet("color: #355737; font-weight: 700; min-height: 22px;")
+        self.lbl_server_info.setStyleSheet("color: #166534; font-weight: 700; min-height: 22px;")
         conn_layout.addWidget(self.lbl_server_info, stretch=1)
 
-        btn_refresh_tasks = QPushButton("🔄 Refresh Tasks from Server")
+        btn_refresh_tasks = QPushButton("Refresh Tasks from Server")
+        btn_refresh_tasks.setIcon(get_svg_icon("refresh", 16))
+        btn_refresh_tasks.setIconSize(QSize(16, 16))
         btn_refresh_tasks.clicked.connect(self._fetch_cvat_tasks)
         conn_layout.addWidget(btn_refresh_tasks)
 
@@ -658,10 +681,14 @@ class MainWindow(QMainWindow):
         filter_layout.addWidget(self.txt_task_search)
 
         btn_select_all = QPushButton("Select All")
+        btn_select_all.setIcon(get_svg_icon("check", 14))
+        btn_select_all.setIconSize(QSize(14, 14))
         btn_select_all.clicked.connect(lambda: self._set_all_tasks_checked(True))
         filter_layout.addWidget(btn_select_all)
 
         btn_clear_sel = QPushButton("Deselect All")
+        btn_clear_sel.setIcon(get_svg_icon("filter", 14))
+        btn_clear_sel.setIconSize(QSize(14, 14))
         btn_clear_sel.clicked.connect(lambda: self._set_all_tasks_checked(False))
         filter_layout.addWidget(btn_clear_sel)
 
@@ -692,11 +719,15 @@ class MainWindow(QMainWindow):
         dl_layout.addWidget(self.txt_dl_folder, stretch=1)
 
         btn_browse_dl = QPushButton("Browse...")
+        btn_browse_dl.setIcon(get_svg_icon("folder", 16))
+        btn_browse_dl.setIconSize(QSize(16, 16))
         btn_browse_dl.clicked.connect(lambda: self._browse_folder(self.txt_dl_folder))
         dl_layout.addWidget(btn_browse_dl)
 
-        self.btn_download_tasks = QPushButton("⬇️ Download & Auto-Extract Tasks (COCO 1.0)")
+        self.btn_download_tasks = QPushButton("Download & Auto-Extract Tasks (COCO 1.0)")
         self.btn_download_tasks.setProperty("class", "PrimaryButton")
+        self.btn_download_tasks.setIcon(get_svg_icon("download", 18))
+        self.btn_download_tasks.setIconSize(QSize(18, 18))
         self.btn_download_tasks.clicked.connect(self._on_download_selected_tasks)
         dl_layout.addWidget(self.btn_download_tasks)
 
@@ -712,8 +743,10 @@ class MainWindow(QMainWindow):
         self.lbl_cvat_status = QLabel("Select tasks above to download.")
         status_row.addWidget(self.lbl_cvat_status, stretch=1)
 
-        self.btn_next_step_1 = QPushButton("Proceed to Step 2: Merge & Convert ➔")
+        self.btn_next_step_1 = QPushButton("Proceed to Step 2: Merge & Convert")
         self.btn_next_step_1.setProperty("class", "StepNavButton")
+        self.btn_next_step_1.setIcon(get_svg_icon("arrow_right", 16))
+        self.btn_next_step_1.setIconSize(QSize(16, 16))
         self.btn_next_step_1.clicked.connect(lambda: self._go_to_step(1))
         status_row.addWidget(self.btn_next_step_1)
 
@@ -739,6 +772,8 @@ class MainWindow(QMainWindow):
         self.txt_merge_src = QLineEdit(str(self.downloads_dir))
         row_src.addWidget(self.txt_merge_src, stretch=1)
         btn_src = QPushButton("Browse...")
+        btn_src.setIcon(get_svg_icon("folder", 16))
+        btn_src.setIconSize(QSize(16, 16))
         btn_src.clicked.connect(lambda: self._browse_folder(self.txt_merge_src))
         row_src.addWidget(btn_src)
         merge_layout.addLayout(row_src)
@@ -748,13 +783,17 @@ class MainWindow(QMainWindow):
         self.txt_merge_dst = QLineEdit(str(self.merged_dir))
         row_dst.addWidget(self.txt_merge_dst, stretch=1)
         btn_dst = QPushButton("Browse...")
+        btn_dst.setIcon(get_svg_icon("folder", 16))
+        btn_dst.setIconSize(QSize(16, 16))
         btn_dst.clicked.connect(lambda: self._browse_folder(self.txt_merge_dst))
         row_dst.addWidget(btn_dst)
         merge_layout.addLayout(row_dst)
 
         merge_action_row = QHBoxLayout()
-        self.btn_run_merge = QPushButton("🧩 Merge Datasets (Deduplicate Images & Unify Annotations)")
+        self.btn_run_merge = QPushButton("Merge Datasets (Deduplicate Images & Unify Annotations)")
         self.btn_run_merge.setProperty("class", "PrimaryButton")
+        self.btn_run_merge.setIcon(get_svg_icon("step_merge", 18))
+        self.btn_run_merge.setIconSize(QSize(18, 18))
         self.btn_run_merge.clicked.connect(self._on_run_merge)
         merge_action_row.addWidget(self.btn_run_merge)
         merge_layout.addLayout(merge_action_row)
@@ -771,8 +810,8 @@ class MainWindow(QMainWindow):
 
         mode_row = QHBoxLayout()
         mode_row.addWidget(QLabel("YOLO Task Mode:"))
-        self.rb_mode_det = QRadioButton("🎯 Detection (Converts Segmentation Polygons to Normalized Bounding Boxes)")
-        self.rb_mode_seg = QRadioButton("🔷 Segmentation (Preserves Exact Polygon Coordinates)")
+        self.rb_mode_det = QRadioButton("Detection (Converts Segmentation Polygons to Normalized Bounding Boxes)")
+        self.rb_mode_seg = QRadioButton("Segmentation (Preserves Exact Polygon Coordinates)")
         self.rb_mode_det.setChecked(True)
         self.rb_mode_det.toggled.connect(self._on_task_mode_changed)
 
@@ -786,13 +825,17 @@ class MainWindow(QMainWindow):
         self.txt_conv_labels_dst = QLineEdit(str(self.merged_dir / "labels"))
         row_lbl_dst.addWidget(self.txt_conv_labels_dst, stretch=1)
         btn_lbl_dst = QPushButton("Browse...")
+        btn_lbl_dst.setIcon(get_svg_icon("folder", 16))
+        btn_lbl_dst.setIconSize(QSize(16, 16))
         btn_lbl_dst.clicked.connect(lambda: self._browse_folder(self.txt_conv_labels_dst))
         row_lbl_dst.addWidget(btn_lbl_dst)
         conv_layout.addLayout(row_lbl_dst)
 
         conv_action_row = QHBoxLayout()
-        self.btn_run_convert = QPushButton("⚡ Convert COCO to YOLO (.txt)")
+        self.btn_run_convert = QPushButton("Convert COCO to YOLO (.txt)")
         self.btn_run_convert.setProperty("class", "SuccessButton")
+        self.btn_run_convert.setIcon(get_svg_icon("step_convert", 18))
+        self.btn_run_convert.setIconSize(QSize(18, 18))
         self.btn_run_convert.clicked.connect(self._on_run_convert)
         conv_action_row.addWidget(self.btn_run_convert)
         conv_layout.addLayout(conv_action_row)
@@ -809,8 +852,10 @@ class MainWindow(QMainWindow):
 
         advance_row = QHBoxLayout()
         advance_row.addStretch()
-        self.btn_next_step_2 = QPushButton("Proceed to Step 3: Dataset Splitter ➔")
+        self.btn_next_step_2 = QPushButton("Proceed to Step 3: Dataset Splitter")
         self.btn_next_step_2.setProperty("class", "StepNavButton")
+        self.btn_next_step_2.setIcon(get_svg_icon("arrow_right", 16))
+        self.btn_next_step_2.setIconSize(QSize(16, 16))
         self.btn_next_step_2.clicked.connect(lambda: self._go_to_step(2))
         advance_row.addWidget(self.btn_next_step_2)
         layout.addLayout(advance_row)
@@ -836,6 +881,8 @@ class MainWindow(QMainWindow):
         self.txt_split_img_src = QLineEdit(str(self.merged_dir / "images"))
         box_paths_layout.addWidget(self.txt_split_img_src, 0, 1)
         btn_img_src = QPushButton("Browse...")
+        btn_img_src.setIcon(get_svg_icon("folder", 16))
+        btn_img_src.setIconSize(QSize(16, 16))
         btn_img_src.clicked.connect(lambda: self._browse_folder(self.txt_split_img_src))
         box_paths_layout.addWidget(btn_img_src, 0, 2)
 
@@ -843,6 +890,8 @@ class MainWindow(QMainWindow):
         self.txt_split_lbl_src = QLineEdit(str(self.merged_dir / "labels"))
         box_paths_layout.addWidget(self.txt_split_lbl_src, 1, 1)
         btn_lbl_src = QPushButton("Browse...")
+        btn_lbl_src.setIcon(get_svg_icon("folder", 16))
+        btn_lbl_src.setIconSize(QSize(16, 16))
         btn_lbl_src.clicked.connect(lambda: self._browse_folder(self.txt_split_lbl_src))
         box_paths_layout.addWidget(btn_lbl_src, 1, 2)
 
@@ -850,6 +899,8 @@ class MainWindow(QMainWindow):
         self.txt_split_dst = QLineEdit(str(self.dataset_dir))
         box_paths_layout.addWidget(self.txt_split_dst, 2, 1)
         btn_split_dst = QPushButton("Browse...")
+        btn_split_dst.setIcon(get_svg_icon("folder", 16))
+        btn_split_dst.setIconSize(QSize(16, 16))
         btn_split_dst.clicked.connect(lambda: self._browse_folder(self.txt_split_dst))
         box_paths_layout.addWidget(btn_split_dst, 2, 2)
 
@@ -901,15 +952,17 @@ class MainWindow(QMainWindow):
         self.slider_test.valueChanged.connect(self.spin_test.setValue)
         self.spin_test.valueChanged.connect(self.slider_test.setValue)
 
-        self.chk_all_images = QCheckBox("☑️ Include ALL images in dataset (background images without annotations will receive empty label files)")
+        self.chk_all_images = QCheckBox("Include ALL images in dataset (background images without annotations will receive empty label files)")
         self.chk_all_images.setChecked(True)
         self.chk_all_images.setEnabled(False)
         box_ratios_layout.addWidget(self.chk_all_images, 3, 0, 1, 3)
 
         layout.addWidget(box_ratios)
 
-        self.btn_run_split = QPushButton("📦 Split Dataset & Generate data.yaml")
+        self.btn_run_split = QPushButton("Split Dataset & Generate data.yaml")
         self.btn_run_split.setProperty("class", "PrimaryButton")
+        self.btn_run_split.setIcon(get_svg_icon("step_split", 18))
+        self.btn_run_split.setIconSize(QSize(18, 18))
         self.btn_run_split.clicked.connect(self._on_run_split)
         layout.addWidget(self.btn_run_split)
 
@@ -922,8 +975,10 @@ class MainWindow(QMainWindow):
 
         advance_row = QHBoxLayout()
         advance_row.addStretch()
-        self.btn_next_step_3 = QPushButton("Proceed to Step 4: YOLO Training ➔")
+        self.btn_next_step_3 = QPushButton("Proceed to Step 4: YOLO Training")
         self.btn_next_step_3.setProperty("class", "StepNavButton")
+        self.btn_next_step_3.setIcon(get_svg_icon("arrow_right", 16))
+        self.btn_next_step_3.setIconSize(QSize(16, 16))
         self.btn_next_step_3.clicked.connect(lambda: self._go_to_step(3))
         advance_row.addWidget(self.btn_next_step_3)
         layout.addLayout(advance_row)
@@ -960,6 +1015,8 @@ class MainWindow(QMainWindow):
         self.txt_custom_model.setPlaceholderText("Optional path to custom .pt weights")
         m_layout.addWidget(self.txt_custom_model, 0, 5)
         btn_browse_pt = QPushButton("Browse...")
+        btn_browse_pt.setIcon(get_svg_icon("folder", 16))
+        btn_browse_pt.setIconSize(QSize(16, 16))
         btn_browse_pt.clicked.connect(self._browse_model_pt)
         m_layout.addWidget(btn_browse_pt, 0, 6)
 
@@ -967,6 +1024,8 @@ class MainWindow(QMainWindow):
         self.txt_data_yaml = QLineEdit(str(self.dataset_dir / "data.yaml"))
         m_layout.addWidget(self.txt_data_yaml, 1, 1, 1, 5)
         btn_browse_yaml = QPushButton("Browse...")
+        btn_browse_yaml.setIcon(get_svg_icon("folder", 16))
+        btn_browse_yaml.setIconSize(QSize(16, 16))
         btn_browse_yaml.clicked.connect(self._browse_data_yaml)
         m_layout.addWidget(btn_browse_yaml, 1, 6)
 
@@ -977,8 +1036,10 @@ class MainWindow(QMainWindow):
         h_layout.setHorizontalSpacing(12)
         h_layout.setVerticalSpacing(8)
 
-        self.btn_auto_tune = QPushButton("⚡ Auto-Tune Hyperparameters for Dataset")
+        self.btn_auto_tune = QPushButton("Auto-Tune Hyperparameters for Dataset")
         self.btn_auto_tune.setProperty("class", "SuccessButton")
+        self.btn_auto_tune.setIcon(get_svg_icon("brain", 18))
+        self.btn_auto_tune.setIconSize(QSize(18, 18))
         self.btn_auto_tune.clicked.connect(self._on_auto_tune_clicked)
         h_layout.addWidget(self.btn_auto_tune, 0, 0, 1, 6)
 
@@ -1046,11 +1107,13 @@ class MainWindow(QMainWindow):
         self.txt_runs_base = QLineEdit(str(self.runs_dir))
         naming_layout.addWidget(self.txt_runs_base, 0, 3)
         btn_runs_base = QPushButton("Browse...")
+        btn_runs_base.setIcon(get_svg_icon("folder", 16))
+        btn_runs_base.setIconSize(QSize(16, 16))
         btn_runs_base.clicked.connect(lambda: self._browse_folder(self.txt_runs_base))
         naming_layout.addWidget(btn_runs_base, 0, 4)
 
         self.lbl_run_preview = QLabel("Output Preview: runs/detect/my_yolo_model_v1/weights/my_yolo_model.pt")
-        self.lbl_run_preview.setStyleSheet("color: #355737; font-weight: 700; min-height: 36px; line-height: 1.4;")
+        self.lbl_run_preview.setStyleSheet("color: #166534; font-weight: 700; min-height: 36px; line-height: 1.4;")
         naming_layout.addWidget(self.lbl_run_preview, 1, 0, 1, 5)
 
         layout.addWidget(box_naming)
@@ -1059,13 +1122,17 @@ class MainWindow(QMainWindow):
         self._update_run_preview()
 
         action_row = QHBoxLayout()
-        self.btn_start_train = QPushButton("🚀 Start YOLO Training")
+        self.btn_start_train = QPushButton("Start YOLO Training")
         self.btn_start_train.setProperty("class", "PrimaryButton")
+        self.btn_start_train.setIcon(get_svg_icon("step_train", 20))
+        self.btn_start_train.setIconSize(QSize(20, 20))
         self.btn_start_train.clicked.connect(self._on_start_training)
         action_row.addWidget(self.btn_start_train, stretch=2)
 
-        self.btn_stop_train = QPushButton("⏹️ Stop Training")
+        self.btn_stop_train = QPushButton("Stop Training")
         self.btn_stop_train.setProperty("class", "DangerButton")
+        self.btn_stop_train.setIcon(get_svg_icon("stop", 18))
+        self.btn_stop_train.setIconSize(QSize(18, 18))
         self.btn_stop_train.setEnabled(False)
         self.btn_stop_train.clicked.connect(self._on_stop_training)
         action_row.addWidget(self.btn_stop_train, stretch=1)
@@ -1075,17 +1142,31 @@ class MainWindow(QMainWindow):
         metrics_card = QFrame()
         metrics_card.setProperty("class", "CardFrame")
         metrics_layout = QHBoxLayout(metrics_card)
-        metrics_layout.setContentsMargins(12, 8, 12, 8)
+        metrics_layout.setContentsMargins(14, 8, 14, 8)
+        metrics_layout.setSpacing(14)
+
+        def make_metric_badge(icon_name, text_lbl):
+            b_layout = QHBoxLayout()
+            b_layout.setSpacing(6)
+            icon_lbl = QLabel()
+            icon_lbl.setPixmap(get_svg_pixmap(icon_name, 18, 18))
+            b_layout.addWidget(icon_lbl)
+            text_lbl.setStyleSheet("font-weight: 700; font-size: 13px; color: #1e293b; min-height: 24px;")
+            b_layout.addWidget(text_lbl)
+            return b_layout
 
         self.lbl_metric_epoch = QLabel("Epoch: --/--")
         self.lbl_metric_loss = QLabel("Loss: --")
         self.lbl_metric_fitness = QLabel("Best Fitness / mAP: --")
         self.lbl_metric_early_stop = QLabel("Early Stopping: Active")
 
-        for m_lbl in [self.lbl_metric_epoch, self.lbl_metric_loss, self.lbl_metric_fitness, self.lbl_metric_early_stop]:
-            m_lbl.setStyleSheet("font-weight: 700; font-size: 13px; color: #2e221b; min-height: 24px; padding: 2px 4px;")
-            metrics_layout.addWidget(m_lbl)
-            metrics_layout.addStretch()
+        metrics_layout.addLayout(make_metric_badge("clock", self.lbl_metric_epoch))
+        metrics_layout.addStretch()
+        metrics_layout.addLayout(make_metric_badge("chart", self.lbl_metric_loss))
+        metrics_layout.addStretch()
+        metrics_layout.addLayout(make_metric_badge("target", self.lbl_metric_fitness))
+        metrics_layout.addStretch()
+        metrics_layout.addLayout(make_metric_badge("zen_stones", self.lbl_metric_early_stop))
 
         layout.addWidget(metrics_card)
 
@@ -1100,8 +1181,10 @@ class MainWindow(QMainWindow):
 
         advance_row = QHBoxLayout()
         advance_row.addStretch()
-        self.btn_next_step_4 = QPushButton("View Results in Step 5 ➔")
+        self.btn_next_step_4 = QPushButton("View Results in Step 5")
         self.btn_next_step_4.setProperty("class", "StepNavButton")
+        self.btn_next_step_4.setIcon(get_svg_icon("arrow_right", 16))
+        self.btn_next_step_4.setIconSize(QSize(16, 16))
         self.btn_next_step_4.clicked.connect(lambda: self._go_to_step(4))
         advance_row.addWidget(self.btn_next_step_4)
         layout.addLayout(advance_row)
@@ -1122,19 +1205,27 @@ class MainWindow(QMainWindow):
         quick_layout.setHorizontalSpacing(12)
         quick_layout.setVerticalSpacing(10)
 
-        btn_open_dl = QPushButton("📁 Open Downloads Folder")
+        btn_open_dl = QPushButton("Open Downloads Folder")
+        btn_open_dl.setIcon(get_svg_icon("folder", 18))
+        btn_open_dl.setIconSize(QSize(18, 18))
         btn_open_dl.clicked.connect(lambda: self._open_dir(self.downloads_dir))
         quick_layout.addWidget(btn_open_dl, 0, 0)
 
-        btn_open_mrg = QPushButton("📁 Open Merged Folder")
+        btn_open_mrg = QPushButton("Open Merged Folder")
+        btn_open_mrg.setIcon(get_svg_icon("step_merge", 18))
+        btn_open_mrg.setIconSize(QSize(18, 18))
         btn_open_mrg.clicked.connect(lambda: self._open_dir(self.merged_dir))
         quick_layout.addWidget(btn_open_mrg, 0, 1)
 
-        btn_open_ds = QPushButton("📁 Open Split Dataset Folder")
+        btn_open_ds = QPushButton("Open Split Dataset Folder")
+        btn_open_ds.setIcon(get_svg_icon("step_split", 18))
+        btn_open_ds.setIconSize(QSize(18, 18))
         btn_open_ds.clicked.connect(lambda: self._open_dir(self.dataset_dir))
         quick_layout.addWidget(btn_open_ds, 1, 0)
 
-        btn_open_runs = QPushButton("📁 Open Runs / Weights Folder")
+        btn_open_runs = QPushButton("Open Runs / Weights Folder")
+        btn_open_runs.setIcon(get_svg_icon("lotus", 18))
+        btn_open_runs.setIconSize(QSize(18, 18))
         btn_open_runs.clicked.connect(lambda: self._open_dir(self.runs_dir))
         quick_layout.addWidget(btn_open_runs, 1, 1)
 
@@ -1146,7 +1237,9 @@ class MainWindow(QMainWindow):
         self.txt_yaml_preview.setReadOnly(True)
         yaml_layout.addWidget(self.txt_yaml_preview)
 
-        btn_refresh_yaml = QPushButton("🔄 Refresh data.yaml Preview")
+        btn_refresh_yaml = QPushButton("Refresh data.yaml Preview")
+        btn_refresh_yaml.setIcon(get_svg_icon("refresh", 16))
+        btn_refresh_yaml.setIconSize(QSize(16, 16))
         btn_refresh_yaml.clicked.connect(self._refresh_yaml_preview)
         yaml_layout.addWidget(btn_refresh_yaml)
 
@@ -1163,21 +1256,25 @@ class MainWindow(QMainWindow):
         layout = QHBoxLayout(footer)
         layout.setContentsMargins(8, 4, 8, 4)
 
-        self.btn_prev_step = QPushButton("⬅️ Previous Step")
+        self.btn_prev_step = QPushButton("Previous Step")
         self.btn_prev_step.setProperty("class", "StepNavButton")
+        self.btn_prev_step.setIcon(get_svg_icon("arrow_left", 18))
+        self.btn_prev_step.setIconSize(QSize(18, 18))
         self.btn_prev_step.clicked.connect(self._on_prev_step)
         layout.addWidget(self.btn_prev_step)
 
         layout.addStretch()
 
         self.lbl_step_indicator = QLabel("Step 1 of 5: Task Explorer")
-        self.lbl_step_indicator.setStyleSheet("font-weight: 700; color: #355737; font-size: 13px; min-height: 22px;")
+        self.lbl_step_indicator.setStyleSheet("font-weight: 700; color: #166534; font-size: 13px; min-height: 22px;")
         layout.addWidget(self.lbl_step_indicator)
 
         layout.addStretch()
 
-        self.btn_next_step = QPushButton("Next Step ➡️")
+        self.btn_next_step = QPushButton("Next Step")
         self.btn_next_step.setProperty("class", "StepNavButton")
+        self.btn_next_step.setIcon(get_svg_icon("arrow_right", 18))
+        self.btn_next_step.setIconSize(QSize(18, 18))
         self.btn_next_step.clicked.connect(self._on_next_step)
         layout.addWidget(self.btn_next_step)
 
@@ -1192,11 +1289,16 @@ class MainWindow(QMainWindow):
         layout = QHBoxLayout(bar)
         layout.setContentsMargins(12, 6, 12, 6)
 
-        self.lbl_global_status = QLabel("🟢 Ready")
+        self.lbl_status_icon = QLabel()
+        self.lbl_status_icon.setPixmap(get_svg_pixmap("check", 16, 16))
+        layout.addWidget(self.lbl_status_icon)
+
+        self.lbl_global_status = QLabel("Ready")
+        self.lbl_global_status.setStyleSheet("font-weight: 600; color: #166534;")
         layout.addWidget(self.lbl_global_status, stretch=1)
 
         lbl_workspace = QLabel(f"Workspace: {self.app_dir}")
-        lbl_workspace.setStyleSheet("color: #786659; font-size: 11px;")
+        lbl_workspace.setStyleSheet("color: #64748b; font-size: 11px;")
         layout.addWidget(lbl_workspace)
 
         return bar
@@ -1232,7 +1334,7 @@ class MainWindow(QMainWindow):
         # Update Studio Header
         username = login_info.get("username") or "User"
         server_url = login_info.get("server_url")
-        self.lbl_user_badge.setText(f"👤 Logged in as: {username} | Host: {server_url}")
+        self.lbl_user_badge.setText(f"Logged in as: {username} | Host: {server_url}")
         self.lbl_server_info.setText(f"Connected Server: {server_url} (v{login_info.get('server_version')})")
 
         # Populate projects dropdown
@@ -1258,7 +1360,7 @@ class MainWindow(QMainWindow):
         self._show_login_alert(f"Authentication Failed: {err_msg}")
 
     def _show_login_alert(self, message: str):
-        self.lbl_login_alert.setText(f"⚠️ {message}")
+        self.lbl_login_alert.setText(f"{message}")
         self.lbl_login_alert.show()
 
     def _on_skip_login(self):
