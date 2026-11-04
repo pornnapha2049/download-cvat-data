@@ -1,11 +1,14 @@
 """
 Main Window for the CVAT-to-YOLO GUI application.
-All Pages are 100% Standalone Tools with a Single Unified 'data' Directory:
-1. CVAT Downloader (Server connection with NO default URL, filtering, downloading & cleanup of /images/default)
-2. Merge Datasets (Deduplicates images with MD5 and unifies COCO 1.0 annotations)
-3. COCO to YOLO Converter (Detection Bounding Box or Segmentation Polygon)
-4. Dataset Splitter (Train/Val/Test partitions including all background images, generates data.yaml)
-5. YOLO Auto-Trainer & Explorer (Auto-Tune, Early Stopping, versioned runs, and custom weights)
+Faithfully designed in the Pinterest Pastel Wellness & Mindfulness style:
+https://i.pinimg.com/1200x/69/a3/a3/69a3a365c2017d08d2c1ce4795633dd5.jpg
+
+Features:
+- Dedicated standalone pages with smooth forward 'Next' and '< Back' navigation (no top stepper buttons)
+- Top app bar with circular back button, centered title, bell notification, wave pill, and dancing mascot
+- Soft pastel wellness palette (slate-cream, pure white cards, deep slate navy #0f3747, matcha mint, lavender pink, butter yellow)
+- Single unified 'data/' folder architecture for all dataset operations
+- Blank CVAT server URL by default (no hardcoded initial URL)
 """
 
 import os
@@ -40,7 +43,7 @@ from ui.svg_icons import get_svg_icon, get_svg_pixmap
 # =====================================================================
 
 class CvatAuthWorker(QThread):
-    finished_signal = pyqtSignal(dict, list, list)  # login_info, projects, tasks
+    finished_signal = pyqtSignal(dict, list, list)
     error_signal = pyqtSignal(str)
 
     def __init__(self, client: CvatClientWrapper, url: str, username: str, password: str):
@@ -231,31 +234,39 @@ class TrainWorker(QThread):
 
 
 # =====================================================================
-# Main GUI Window (100% Standalone Tools Architecture)
+# Main GUI Window (Mobile / Tablet Wellness Style)
 # =====================================================================
 
 class MainWindow(QMainWindow):
-    STEP_DESCRIPTIONS = [
-        ("CVAT Downloader", "เชื่อมต่อและดาวน์โหลด Tasks จาก CVAT (COCO 1.0 + Clean /images/default)"),
-        ("Merge Datasets", "รวม Datasets หลายๆ Task เข้าด้วยกัน และแก้ชื่อภาพซ้ำด้วย MD5"),
-        ("COCO to YOLO", "แปลง Annotation COCO 1.0 เป็น YOLO Detection (.txt) หรือ Segmentation"),
-        ("Dataset Splitter", "แบ่ง Train/Val/Test โดยนำทุกรูปภาพเข้าร่วม 100% (รวม Backgrounds)"),
-        ("YOLO Auto-Trainer", "Auto-Tune โมเดล, Train พร้อม Early Stopping และจัดการ Weights"),
+    PAGE_TITLES = [
+        "1. CVAT Downloader",
+        "2. Merge Datasets",
+        "3. COCO to YOLO Converter",
+        "4. Dataset Splitter",
+        "5. YOLO Auto-Trainer"
     ]
 
-    STEP_GUIDES = [
-        ".☘︎ ݁˖ เครื่องมือที่ 1 (CVAT Downloader): กรอก URL, Username, Password แล้วคลิก 'Connect & Fetch' เพื่อดึงรายการ Tasks จากนั้นเลือก Tasks แล้วกดดาวน์โหลด ระบบจะแตกไฟล์และย้ายรูปออกจาก /images/default ให้เองครับ",
-        ".☘︎ ݁˖ เครื่องมือที่ 2 (Merge Datasets): เลือกโฟลเดอร์ต้นทางที่มีหลายๆ Task แล้วกด Merge ระบบจะรวมไฟล์ภาพและ Annotations เข้าเป็น Dataset เดียวกันในโฟลเดอร์ data/ พร้อมแก้ชื่อไฟล์ซ้ำด้วย MD5",
-        ".☘︎ ݁˖ เครื่องมือที่ 3 (COCO to YOLO): เลือกไฟล์ COCO JSON และโหมด Detection (แปลง Polygon เป็น Bounding Box) หรือ Segmentation จากนั้นกด Convert เพื่อสร้างไฟล์ Label .txt",
-        ".☘︎ ݁˖ เครื่องมือที่ 4 (Dataset Splitter): กำหนดสัดส่วน Train / Val / Test (รูปภาพทั้งหมด 100% จะถูกนำมาใช้งาน รวมถึงภาพ Background ที่ไม่มี Label) จากนั้นกด Split เพื่อสร้าง data.yaml",
-        ".☘︎ ݁˖ เครื่องมือที่ 5 (YOLO Auto-Trainer): กดปุ่ม '⚡ Auto-Tune Hyperparameters' เพื่อตั้งค่าโมเดลให้เข้ากับข้อมูล ตั้งชื่อโฟลเดอร์รัน แล้วเริ่ม Train โมเดล YOLO ได้ทันที",
+    PAGE_TAGS = [
+        ("TagPink", "CVAT Connect & Download"),
+        ("TagYellow", "COCO 1.0 Data Consolidation"),
+        ("TagGreen", "YOLO Format Converter"),
+        ("TagBlue", "Train / Val / Test Partition"),
+        ("TagPurple", "Model Training & Weights"),
+    ]
+
+    PAGE_SUBTITLES = [
+        "Enter CVAT server credentials, query tasks, and auto-flatten image directories.",
+        "Consolidate multiple downloaded tasks into data/ with automatic MD5 deduplication.",
+        "Convert COCO annotations into YOLO .txt format for Detection (BBox) or Segmentation (Polygon).",
+        "Partition dataset with 100% images guarantee (including unannotated background images).",
+        "Intelligently auto-tune hyperparameters, train YOLO model, and inspect outputs in data/ and runs/."
     ]
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle(".☘︎ ݁˖ CVAT to YOLO Studio • Standalone AI Pipeline")
-        self.resize(1260, 860)
-        self.setMinimumSize(940, 620)
+        self.setWindowTitle(".☘︎ ݁˖ CVAT to YOLO Studio • Cozy AI Pipeline")
+        self.resize(1120, 840)
+        self.setMinimumSize(920, 620)
 
         # Single Unified Data Folder Architecture
         self.app_dir = Path("C:/Articulus/cvat").resolve()
@@ -274,7 +285,6 @@ class MainWindow(QMainWindow):
         self.trainer_engine = YoloTrainerEngine()
 
         self.all_tasks_data: list[dict] = []
-        self.step_completed = [False, False, False, False, False]
         self.active_worker = None
 
         self._init_ui()
@@ -282,7 +292,6 @@ class MainWindow(QMainWindow):
         self._go_to_step(0)
 
     def _wrap_page_scroll(self, widget: QWidget) -> QScrollArea:
-        """Wraps any standalone page inside a responsive QScrollArea so content never clips."""
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
@@ -297,19 +306,16 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central_widget)
 
         root_layout = QVBoxLayout(central_widget)
-        root_layout.setContentsMargins(16, 12, 16, 12)
+        root_layout.setContentsMargins(18, 12, 18, 12)
         root_layout.setSpacing(10)
 
-        # 1. Header with Animated Mascot, Hardware info & Quick Folder Action
-        root_layout.addWidget(self._build_studio_header())
+        # 1. Top App Bar (< Back | Title | Wave | Bell | Mascot)
+        root_layout.addWidget(self._build_top_app_bar())
 
-        # 2. Standalone Page Navigation Bar (5 Tools)
-        root_layout.addWidget(self._build_stepper_bar())
+        # 2. Page Greeting Header (Mental Health / Wellness style)
+        root_layout.addWidget(self._build_page_header_card())
 
-        # 3. Dynamic Guide Box
-        root_layout.addWidget(self._build_guide_box())
-
-        # 4. Multi-Page Container (QStackedWidget with Responsive QScrollArea)
+        # 3. Dedicated Standalone Pages Container (QStackedWidget)
         self.pages = QStackedWidget()
         self.pages.addWidget(self._wrap_page_scroll(self._build_page_cvat()))
         self.pages.addWidget(self._wrap_page_scroll(self._build_page_merge()))
@@ -318,149 +324,157 @@ class MainWindow(QMainWindow):
         self.pages.addWidget(self._wrap_page_scroll(self._build_page_train()))
         root_layout.addWidget(self.pages, stretch=1)
 
-        # 5. Bottom Stepper Footer Navigation (< Previous Tool | Tool X of 5 | Next Tool >)
-        root_layout.addWidget(self._build_stepper_footer())
-
-        # 6. Global Status Bar
-        root_layout.addWidget(self._build_global_status_bar())
+        # 4. Bottom Navigation Footer (< Previous | Step Pills 1-5 | Next >)
+        root_layout.addWidget(self._build_bottom_nav_footer())
 
     # -----------------------------------------------------------------
-    # Studio Header
+    # Top App Bar (Sleek Circle Navigation & Mascot)
     # -----------------------------------------------------------------
-    def _build_studio_header(self) -> QFrame:
-        card = QFrame()
-        card.setProperty("class", "HeaderCard")
-        layout = QHBoxLayout(card)
-        layout.setContentsMargins(18, 10, 18, 10)
-
-        text_layout = QVBoxLayout()
-        text_layout.setSpacing(3)
-
-        title_row = QHBoxLayout()
-        title_lbl = QLabel(".☘︎ ݁˖ CVAT to YOLO Studio • Standalone AI Pipeline")
-        title_lbl.setObjectName("titleLabel")
-        title_row.addWidget(title_lbl)
-
-        self.wave_indicator = AnimatedWavePill(42, 22)
-        title_row.addWidget(self.wave_indicator)
-        title_row.addStretch()
-        text_layout.addLayout(title_row)
-
-        subtitle_lbl = QLabel(
-            "All-in-One Standalone Pipeline: CVAT Downloader ➔ Dataset Merger ➔ "
-            "COCO-to-YOLO (Det/Seg) ➔ Full Dataset Split ➔ YOLO Auto-Trainer"
-        )
-        subtitle_lbl.setObjectName("subtitleLabel")
-        text_layout.addWidget(subtitle_lbl)
-
-        profile_row = QHBoxLayout()
-        self.lbl_server_icon = QLabel()
-        self.lbl_server_icon.setPixmap(get_svg_pixmap("server", 18, 18))
-        profile_row.addWidget(self.lbl_server_icon)
-
-        self.lbl_server_info = QLabel("CVAT Server: Not Connected")
-        self.lbl_server_info.setStyleSheet("color: #64748b; font-weight: 700; font-size: 12px; min-height: 20px;")
-        profile_row.addWidget(self.lbl_server_info)
-
-        btn_open_data = QPushButton("Open data/ Folder")
-        btn_open_data.setProperty("class", "LogoutButton")
-        btn_open_data.setIcon(get_svg_icon("folder", 15))
-        btn_open_data.setIconSize(QSize(15, 15))
-        btn_open_data.setCursor(Qt.PointingHandCursor)
-        btn_open_data.clicked.connect(lambda: self._open_dir(self.data_dir))
-        profile_row.addWidget(btn_open_data)
-
-        profile_row.addSpacing(14)
-
-        self.lbl_hw_icon = QLabel()
-        self.lbl_hw_icon.setPixmap(get_svg_pixmap("hardware", 18, 18))
-        profile_row.addWidget(self.lbl_hw_icon)
-
-        cuda_ok = torch.cuda.is_available()
-        hw_text = f"{'NVIDIA GPU (' + torch.cuda.get_device_name(0) + ')' if cuda_ok else 'CPU Mode'}"
-        self.hw_badge = QLabel(hw_text)
-        self.hw_badge.setProperty("class", "BadgeSuccess" if cuda_ok else "BadgeInfo")
-        profile_row.addWidget(self.hw_badge)
-        profile_row.addStretch()
-
-        text_layout.addLayout(profile_row)
-        layout.addLayout(text_layout, stretch=1)
-
-        # Mascot Box
-        mascot_box = QVBoxLayout()
-        mascot_box.setAlignment(Qt.AlignCenter)
-
-        self.mascot = DancingSvgMascot(size=105)
-        mascot_box.addWidget(self.mascot, alignment=Qt.AlignCenter)
-
-        self.chk_mascot = QCheckBox("SVG Mascot")
-        self.chk_mascot.setChecked(True)
-        self.chk_mascot.toggled.connect(self.mascot.toggle_animation)
-        mascot_box.addWidget(self.chk_mascot, alignment=Qt.AlignCenter)
-
-        layout.addLayout(mascot_box)
-        return card
-
-    # -----------------------------------------------------------------
-    # Stepper Navigation Bar (5 Standalone Tool Buttons)
-    # -----------------------------------------------------------------
-    def _build_stepper_bar(self) -> QFrame:
+    def _build_top_app_bar(self) -> QFrame:
         bar = QFrame()
-        bar.setProperty("class", "StepperContainer")
+        bar.setObjectName("topAppBar")
         layout = QHBoxLayout(bar)
-        layout.setContentsMargins(6, 6, 6, 6)
-        layout.setSpacing(6)
+        layout.setContentsMargins(4, 2, 4, 2)
 
-        self.step_buttons: list[QPushButton] = []
-        step_config = [
-            ("step_cvat", "1. CVAT Downloader", "Connect & Download Tasks"),
-            ("step_merge", "2. Merge Datasets", "Deduplicate & Unify COCO"),
-            ("step_convert", "3. COCO to YOLO", "Det (BBox) / Seg (Poly)"),
-            ("step_split", "4. Dataset Splitter", "Train/Val/Test (All Imgs)"),
-            ("step_train", "5. YOLO Auto-Trainer", "Train, Auto-Tune & Explorer"),
-        ]
+        # Circular Back Button (like `< Mental Health` in the pin)
+        self.btn_top_back = QPushButton()
+        self.btn_top_back.setObjectName("circleNavButton")
+        self.btn_top_back.setIcon(get_svg_icon("arrow_left", 16))
+        self.btn_top_back.setIconSize(QSize(16, 16))
+        self.btn_top_back.setCursor(Qt.PointingHandCursor)
+        self.btn_top_back.setToolTip("Go to Previous Page")
+        self.btn_top_back.clicked.connect(self._on_prev_step)
+        layout.addWidget(self.btn_top_back)
 
-        for idx, (icon_name, title, sub) in enumerate(step_config):
-            btn = QPushButton()
-            btn.setProperty("class", "StepButton")
-            btn.setIcon(get_svg_icon(icon_name, 26))
-            btn.setIconSize(QSize(26, 26))
-            btn.setText(f"{title}\n{sub}")
-            btn.setCursor(Qt.PointingHandCursor)
-            btn.clicked.connect(lambda checked, step_idx=idx: self._go_to_step(step_idx))
-            layout.addWidget(btn, stretch=1)
-            self.step_buttons.append(btn)
+        layout.addSpacing(10)
+
+        # Top Page Title
+        self.lbl_top_title = QLabel("CVAT Downloader")
+        self.lbl_top_title.setObjectName("appTitleLabel")
+        layout.addWidget(self.lbl_top_title)
+
+        layout.addSpacing(12)
+
+        # Pulsing Wave Pill
+        self.wave_indicator = AnimatedWavePill(36, 18)
+        layout.addWidget(self.wave_indicator)
+
+        layout.addStretch()
+
+        # Circular Bell Button with pink notification dot (from the pin!)
+        self.btn_bell = QPushButton()
+        self.btn_bell.setObjectName("circleNavButton")
+        self.btn_bell.setIcon(get_svg_icon("bell", 20))
+        self.btn_bell.setIconSize(QSize(20, 20))
+        self.btn_bell.setCursor(Qt.PointingHandCursor)
+        self.btn_bell.setToolTip("Open data/ Folder")
+        self.btn_bell.clicked.connect(lambda: self._open_dir(self.data_dir))
+        layout.addWidget(self.btn_bell)
+
+        layout.addSpacing(6)
+
+        # Cozy Mascot
+        self.mascot = DancingSvgMascot(size=58)
+        layout.addWidget(self.mascot)
 
         return bar
 
     # -----------------------------------------------------------------
-    # Guide Box
+    # Greeting Header Card (Wellness Style)
     # -----------------------------------------------------------------
-    def _build_guide_box(self) -> QFrame:
-        box = QFrame()
-        box.setProperty("class", "GuideBox")
-        layout = QHBoxLayout(box)
-        layout.setContentsMargins(12, 6, 12, 6)
+    def _build_page_header_card(self) -> QFrame:
+        card = QFrame()
+        card.setProperty("class", "CardFrame")
+        layout = QHBoxLayout(card)
+        layout.setContentsMargins(18, 12, 18, 12)
 
-        self.lbl_guide = QLabel()
-        self.lbl_guide.setObjectName("guideLabel")
-        self.lbl_guide.setWordWrap(True)
-        layout.addWidget(self.lbl_guide, stretch=1)
-        return box
+        text_layout = QVBoxLayout()
+        text_layout.setSpacing(3)
+
+        tag_row = QHBoxLayout()
+        self.lbl_page_tag = QLabel("CVAT Connect & Download")
+        self.lbl_page_tag.setProperty("class", "TagPink")
+        tag_row.addWidget(self.lbl_page_tag)
+        tag_row.addStretch()
+        text_layout.addLayout(tag_row)
+
+        self.lbl_greeting_title = QLabel("Good Morning, AI Researcher 👋")
+        self.lbl_greeting_title.setObjectName("greetingTitle")
+        text_layout.addWidget(self.lbl_greeting_title)
+
+        self.lbl_greeting_sub = QLabel("Select what you want more for now • Seamless computer vision pipeline")
+        self.lbl_greeting_sub.setObjectName("greetingSubtitle")
+        text_layout.addWidget(self.lbl_greeting_sub)
+
+        layout.addLayout(text_layout, stretch=1)
+
+        # Quick Data Folder Link Pill
+        btn_data_link = QPushButton("data/ Folder")
+        btn_data_link.setProperty("class", "SecondaryNavButton")
+        btn_data_link.setIcon(get_svg_icon("folder", 16))
+        btn_data_link.setIconSize(QSize(16, 16))
+        btn_data_link.setCursor(Qt.PointingHandCursor)
+        btn_data_link.clicked.connect(lambda: self._open_dir(self.data_dir))
+        layout.addWidget(btn_data_link)
+
+        return card
 
     # -----------------------------------------------------------------
-    # Page 1: CVAT Downloader (Standalone)
+    # Bottom Navigation Footer (Carousel Dots & Next Button)
+    # -----------------------------------------------------------------
+    def _build_bottom_nav_footer(self) -> QFrame:
+        footer = QFrame()
+        footer.setObjectName("bottomNavFooter")
+        layout = QHBoxLayout(footer)
+        layout.setContentsMargins(14, 6, 14, 6)
+
+        # Left: Prev Button
+        self.btn_footer_prev = QPushButton("Previous")
+        self.btn_footer_prev.setProperty("class", "SecondaryNavButton")
+        self.btn_footer_prev.setIcon(get_svg_icon("arrow_left", 14))
+        self.btn_footer_prev.setIconSize(QSize(14, 14))
+        self.btn_footer_prev.clicked.connect(self._on_prev_step)
+        layout.addWidget(self.btn_footer_prev)
+
+        layout.addStretch()
+
+        # Center: 5 Carousel Step Pills (Active is Deep Navy #0f3747)
+        self.step_pills: list[QPushButton] = []
+        for i in range(5):
+            pill = QPushButton(f"Step {i+1}")
+            pill.setProperty("class", "StepPillActive" if i == 0 else "StepPill")
+            pill.setCursor(Qt.PointingHandCursor)
+            pill.clicked.connect(lambda chk, idx=i: self._go_to_step(idx))
+            layout.addWidget(pill)
+            self.step_pills.append(pill)
+
+        layout.addStretch()
+
+        # Right: Next Button
+        self.btn_footer_next = QPushButton("Next Step")
+        self.btn_footer_next.setProperty("class", "StepNavButton")
+        self.btn_footer_next.setIcon(get_svg_icon("arrow_right", 14))
+        self.btn_footer_next.setIconSize(QSize(14, 14))
+        self.btn_footer_next.clicked.connect(self._on_next_step)
+        layout.addWidget(self.btn_footer_next)
+
+        return footer
+
+    # -----------------------------------------------------------------
+    # PAGE 1: CVAT Downloader (Dedicated Standalone Screen)
     # -----------------------------------------------------------------
     def _build_page_cvat(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(10)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(12)
 
-        # 1. Connection Card (NO DEFAULT URL!)
-        conn_box = QGroupBox("CVAT Server Authentication & Connection")
-        conn_layout = QGridLayout(conn_box)
-        conn_layout.setHorizontalSpacing(10)
+        # Connection Card (NO DEFAULT URL!)
+        conn_card = QFrame()
+        conn_card.setProperty("class", "CardFrame")
+        conn_layout = QGridLayout(conn_card)
+        conn_layout.setContentsMargins(16, 14, 16, 14)
+        conn_layout.setHorizontalSpacing(12)
         conn_layout.setVerticalSpacing(8)
 
         conn_layout.addWidget(QLabel("CVAT Server URL:"), 0, 0)
@@ -488,22 +502,22 @@ class MainWindow(QMainWindow):
         conn_layout.addWidget(self.btn_do_login, 0, 6)
 
         self.lbl_login_status = QLabel("Enter your CVAT Server URL and credentials above, then click 'Connect & Fetch'.")
-        self.lbl_login_status.setStyleSheet("color: #64748b; font-weight: 600; min-height: 22px;")
+        self.lbl_login_status.setStyleSheet("color: #64748b; font-weight: 600; min-height: 20px;")
         conn_layout.addWidget(self.lbl_login_status, 1, 0, 1, 6)
 
-        btn_refresh_tasks = QPushButton("Refresh Tasks")
-        btn_refresh_tasks.setIcon(get_svg_icon("refresh", 16))
-        btn_refresh_tasks.setIconSize(QSize(16, 16))
-        btn_refresh_tasks.clicked.connect(self._fetch_cvat_tasks)
-        conn_layout.addWidget(btn_refresh_tasks, 1, 6)
+        btn_refresh = QPushButton("Refresh")
+        btn_refresh.setIcon(get_svg_icon("refresh", 14))
+        btn_refresh.setIconSize(QSize(14, 14))
+        btn_refresh.clicked.connect(self._fetch_cvat_tasks)
+        conn_layout.addWidget(btn_refresh, 1, 6)
 
-        layout.addWidget(conn_box)
+        layout.addWidget(conn_card)
 
-        # 2. Filter Card (Project, Stage, State, Search)
+        # Filter Card
         filter_card = QFrame()
         filter_card.setProperty("class", "CardFrame")
         filter_layout = QHBoxLayout(filter_card)
-        filter_layout.setContentsMargins(14, 8, 14, 8)
+        filter_layout.setContentsMargins(14, 10, 14, 10)
         filter_layout.setSpacing(10)
 
         filter_layout.addWidget(QLabel("Project:"))
@@ -526,7 +540,7 @@ class MainWindow(QMainWindow):
 
         filter_layout.addWidget(QLabel("Search:"))
         self.txt_task_search = QLineEdit()
-        self.txt_task_search.setPlaceholderText("Filter by task name...")
+        self.txt_task_search.setPlaceholderText("Filter task name...")
         self.txt_task_search.textChanged.connect(self._apply_task_filters)
         filter_layout.addWidget(self.txt_task_search)
 
@@ -544,7 +558,7 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(filter_card)
 
-        # 3. Tasks Table
+        # Tasks Table
         self.tbl_tasks = QTableWidget()
         self.tbl_tasks.setColumnCount(8)
         self.tbl_tasks.setHorizontalHeaderLabels([
@@ -558,11 +572,11 @@ class MainWindow(QMainWindow):
         self.tbl_tasks.setSelectionBehavior(QTableWidget.SelectRows)
         layout.addWidget(self.tbl_tasks, stretch=1)
 
-        # 4. Download Destination & Action Bar (Unified data/raw_tasks)
+        # Download Card (Target data/raw_tasks)
         dl_card = QFrame()
         dl_card.setProperty("class", "CardFrame")
         dl_layout = QHBoxLayout(dl_card)
-        dl_layout.setContentsMargins(14, 10, 14, 10)
+        dl_layout.setContentsMargins(16, 12, 16, 12)
 
         dl_layout.addWidget(QLabel("Download Folder:"))
         self.txt_dl_folder = QLineEdit(str(self.data_dir / "raw_tasks"))
@@ -574,7 +588,7 @@ class MainWindow(QMainWindow):
         btn_browse_dl.clicked.connect(lambda: self._browse_folder(self.txt_dl_folder))
         dl_layout.addWidget(btn_browse_dl)
 
-        self.btn_download_tasks = QPushButton("Download & Auto-Extract Tasks (COCO 1.0)")
+        self.btn_download_tasks = QPushButton("Download & Extract Selected (COCO 1.0)")
         self.btn_download_tasks.setProperty("class", "PrimaryButton")
         self.btn_download_tasks.setIcon(get_svg_icon("download", 18))
         self.btn_download_tasks.setIconSize(QSize(18, 18))
@@ -583,46 +597,62 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(dl_card)
 
-        # Download Progress & Status
+        # Progress & Status
         self.prog_dl = QProgressBar()
         self.prog_dl.setValue(0)
         self.prog_dl.setTextVisible(True)
         layout.addWidget(self.prog_dl)
 
         status_row = QHBoxLayout()
-        self.lbl_cvat_status = QLabel("Select tasks above to download.")
+        self.lbl_cvat_status = QLabel("Select tasks above and click Download.")
+        self.lbl_cvat_status.setStyleSheet("color: #64748b; font-weight: 600;")
         status_row.addWidget(self.lbl_cvat_status, stretch=1)
 
-        self.btn_next_step_1 = QPushButton("Proceed to Step 2: Merge Datasets")
-        self.btn_next_step_1.setProperty("class", "StepNavButton")
-        self.btn_next_step_1.setIcon(get_svg_icon("arrow_right", 16))
-        self.btn_next_step_1.setIconSize(QSize(16, 16))
-        self.btn_next_step_1.clicked.connect(lambda: self._go_to_step(1))
-        status_row.addWidget(self.btn_next_step_1)
+        self.btn_page1_next = QPushButton("Next: Merge Datasets ➔")
+        self.btn_page1_next.setProperty("class", "StepNavButton")
+        self.btn_page1_next.clicked.connect(lambda: self._go_to_step(1))
+        status_row.addWidget(self.btn_page1_next)
 
         layout.addLayout(status_row)
         return page
 
     # -----------------------------------------------------------------
-    # Page 2: Merge Datasets (Standalone)
+    # PAGE 2: Merge Datasets (Dedicated Standalone Screen)
     # -----------------------------------------------------------------
     def _build_page_merge(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(12)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(14)
 
-        merge_box = QGroupBox("Standalone Tool: Merge Multiple Tasks into Unified COCO 1.0 Dataset")
-        merge_layout = QVBoxLayout(merge_box)
-        merge_layout.setSpacing(12)
+        # Zen Stones Quote Card (Saint Augustine Style from Pin)
+        quote_card = QFrame()
+        quote_card.setProperty("class", "HeroQuoteCard")
+        quote_layout = QHBoxLayout(quote_card)
+        quote_layout.setContentsMargins(18, 16, 18, 16)
 
-        desc = QLabel(
-            "Combines multiple downloaded CVAT tasks (images & instances_default.json) into a single dataset in the data/ folder. "
-            "Automatically resolves duplicate image filenames using MD5 hashes, re-indexes category IDs, and consolidates annotations."
-        )
-        desc.setWordWrap(True)
-        desc.setStyleSheet("color: #64748b; font-size: 12.5px; line-height: 1.4;")
-        merge_layout.addWidget(desc)
+        quote_text_box = QVBoxLayout()
+        quote_lbl = QLabel('"Patience is the companion of wisdom."')
+        quote_lbl.setObjectName("heroQuoteText")
+        quote_text_box.addWidget(quote_lbl)
+
+        author_lbl = QLabel("― Consolidate multiple tasks into data/ with automatic MD5 image collision resolution.")
+        author_lbl.setObjectName("heroQuoteAuthor")
+        quote_text_box.addWidget(author_lbl)
+        quote_layout.addLayout(quote_text_box, stretch=1)
+
+        zen_icon_lbl = QLabel()
+        zen_icon_lbl.setPixmap(get_svg_pixmap("zen_stones", 48, 48))
+        quote_layout.addWidget(zen_icon_lbl)
+
+        layout.addWidget(quote_card)
+
+        # Paths Card
+        paths_card = QFrame()
+        paths_card.setProperty("class", "CardFrame")
+        paths_layout = QVBoxLayout(paths_card)
+        paths_layout.setContentsMargins(18, 16, 18, 16)
+        paths_layout.setSpacing(12)
 
         row_src = QHBoxLayout()
         row_src.addWidget(QLabel("Tasks Source Directory:"))
@@ -633,7 +663,7 @@ class MainWindow(QMainWindow):
         btn_src.setIconSize(QSize(16, 16))
         btn_src.clicked.connect(lambda: self._browse_folder(self.txt_merge_src))
         row_src.addWidget(btn_src)
-        merge_layout.addLayout(row_src)
+        paths_layout.addLayout(row_src)
 
         row_dst = QHBoxLayout()
         row_dst.addWidget(QLabel("Merged Output Directory:"))
@@ -644,61 +674,114 @@ class MainWindow(QMainWindow):
         btn_dst.setIconSize(QSize(16, 16))
         btn_dst.clicked.connect(lambda: self._browse_folder(self.txt_merge_dst))
         row_dst.addWidget(btn_dst)
-        merge_layout.addLayout(row_dst)
+        paths_layout.addLayout(row_dst)
 
-        merge_action_row = QHBoxLayout()
         self.btn_run_merge = QPushButton("Merge Datasets (Deduplicate Images & Unify Annotations)")
         self.btn_run_merge.setProperty("class", "PrimaryButton")
         self.btn_run_merge.setIcon(get_svg_icon("step_merge", 18))
         self.btn_run_merge.setIconSize(QSize(18, 18))
         self.btn_run_merge.clicked.connect(self._on_run_merge)
-        merge_action_row.addWidget(self.btn_run_merge)
-        merge_layout.addLayout(merge_action_row)
+        paths_layout.addWidget(self.btn_run_merge)
 
         self.prog_merge = QProgressBar()
         self.prog_merge.setValue(0)
-        merge_layout.addWidget(self.prog_merge)
+        paths_layout.addWidget(self.prog_merge)
 
         self.lbl_merge_stats = QLabel("No merged dataset yet.")
         self.lbl_merge_stats.setStyleSheet("color: #1e293b; font-weight: 600; min-height: 24px;")
-        merge_layout.addWidget(self.lbl_merge_stats)
+        paths_layout.addWidget(self.lbl_merge_stats)
 
-        layout.addWidget(merge_box)
+        layout.addWidget(paths_card)
 
         advance_row = QHBoxLayout()
         advance_row.addStretch()
-        self.btn_next_step_2 = QPushButton("Proceed to Step 3: COCO to YOLO Converter")
-        self.btn_next_step_2.setProperty("class", "StepNavButton")
-        self.btn_next_step_2.setIcon(get_svg_icon("arrow_right", 16))
-        self.btn_next_step_2.setIconSize(QSize(16, 16))
-        self.btn_next_step_2.clicked.connect(lambda: self._go_to_step(2))
-        advance_row.addWidget(self.btn_next_step_2)
+        self.btn_page2_next = QPushButton("Next: Convert to YOLO ➔")
+        self.btn_page2_next.setProperty("class", "StepNavButton")
+        self.btn_page2_next.clicked.connect(lambda: self._go_to_step(2))
+        advance_row.addWidget(self.btn_page2_next)
         layout.addLayout(advance_row)
 
         layout.addStretch()
         return page
 
     # -----------------------------------------------------------------
-    # Page 3: COCO to YOLO Converter (Standalone)
+    # PAGE 3: COCO to YOLO Converter (Dedicated Standalone Screen)
     # -----------------------------------------------------------------
     def _build_page_convert(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(12)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(14)
 
-        conv_box = QGroupBox("Standalone Tool: Convert COCO 1.0 Annotations to YOLO Format (.txt)")
-        conv_layout = QVBoxLayout(conv_box)
-        conv_layout.setSpacing(12)
+        # 2 Large Choice Cards side-by-side (like "Hang out" and "Laugh" in Phone 1 of the pin!)
+        choice_row = QHBoxLayout()
+        choice_row.setSpacing(14)
 
-        desc = QLabel(
-            "Parses any COCO 1.0 JSON and converts all annotations into YOLO normalized format (.txt). "
-            "For Detection, segmentation polygons are automatically converted to normalized bounding boxes (xc, yc, w, h). "
-            "For Segmentation, exact polygon vertex coordinates are preserved."
-        )
-        desc.setWordWrap(True)
-        desc.setStyleSheet("color: #64748b; font-size: 12.5px; line-height: 1.4;")
-        conv_layout.addWidget(desc)
+        # Detection Card
+        self.card_det = QFrame()
+        self.card_det.setProperty("class", "ChoiceCardNavy")
+        card_det_layout = QVBoxLayout(self.card_det)
+        card_det_layout.setContentsMargins(18, 16, 18, 16)
+
+        c_det_top = QHBoxLayout()
+        icon_box_lbl = QLabel()
+        icon_box_lbl.setPixmap(get_svg_pixmap("box", 28, 28))
+        c_det_top.addWidget(icon_box_lbl)
+        c_det_top.addStretch()
+        card_det_layout.addLayout(c_det_top)
+
+        lbl_det_title = QLabel("YOLO Detection")
+        lbl_det_title.setProperty("class", "ChoiceTitleNavy")
+        card_det_layout.addWidget(lbl_det_title)
+
+        lbl_det_sub = QLabel("Converts polygons to normalized bounding boxes (xc, yc, w, h).")
+        lbl_det_sub.setProperty("class", "ChoiceSubNavy")
+        lbl_det_sub.setWordWrap(True)
+        card_det_layout.addWidget(lbl_det_sub)
+
+        self.rb_mode_det = QRadioButton("Select Detection Mode")
+        self.rb_mode_det.setChecked(True)
+        self.rb_mode_det.setStyleSheet("color: #ffffff; font-weight: 700;")
+        self.rb_mode_det.toggled.connect(self._on_task_mode_changed)
+        card_det_layout.addWidget(self.rb_mode_det)
+
+        choice_row.addWidget(self.card_det, stretch=1)
+
+        # Segmentation Card
+        self.card_seg = QFrame()
+        self.card_seg.setProperty("class", "ChoiceCardPink")
+        card_seg_layout = QVBoxLayout(self.card_seg)
+        card_seg_layout.setContentsMargins(18, 16, 18, 16)
+
+        c_seg_top = QHBoxLayout()
+        icon_poly_lbl = QLabel()
+        icon_poly_lbl.setPixmap(get_svg_pixmap("polygon", 28, 28))
+        c_seg_top.addWidget(icon_poly_lbl)
+        c_seg_top.addStretch()
+        card_seg_layout.addLayout(c_seg_top)
+
+        lbl_seg_title = QLabel("YOLO Segmentation")
+        lbl_seg_title.setProperty("class", "ChoiceTitlePink")
+        card_seg_layout.addWidget(lbl_seg_title)
+
+        lbl_seg_sub = QLabel("Preserves exact polygon vertex contours (cls x1 y1 x2 y2...).")
+        lbl_seg_sub.setProperty("class", "ChoiceSubPink")
+        lbl_seg_sub.setWordWrap(True)
+        card_seg_layout.addWidget(lbl_seg_sub)
+
+        self.rb_mode_seg = QRadioButton("Select Segmentation Mode")
+        self.rb_mode_seg.setStyleSheet("color: #9f1239; font-weight: 700;")
+        card_seg_layout.addWidget(self.rb_mode_seg)
+
+        choice_row.addWidget(self.card_seg, stretch=1)
+        layout.addLayout(choice_row)
+
+        # Conversion Paths Card
+        conv_paths = QFrame()
+        conv_paths.setProperty("class", "CardFrame")
+        cp_layout = QVBoxLayout(conv_paths)
+        cp_layout.setContentsMargins(18, 16, 18, 16)
+        cp_layout.setSpacing(12)
 
         row_json = QHBoxLayout()
         row_json.addWidget(QLabel("COCO JSON File:"))
@@ -709,19 +792,7 @@ class MainWindow(QMainWindow):
         btn_json.setIconSize(QSize(16, 16))
         btn_json.clicked.connect(lambda: self._browse_file(self.txt_conv_json, "JSON Files (*.json)"))
         row_json.addWidget(btn_json)
-        conv_layout.addLayout(row_json)
-
-        mode_row = QHBoxLayout()
-        mode_row.addWidget(QLabel("YOLO Task Mode:"))
-        self.rb_mode_det = QRadioButton("Detection (Converts Segmentation Polygons to Normalized Bounding Boxes)")
-        self.rb_mode_seg = QRadioButton("Segmentation (Preserves Exact Polygon Coordinates)")
-        self.rb_mode_det.setChecked(True)
-        self.rb_mode_det.toggled.connect(self._on_task_mode_changed)
-
-        mode_row.addWidget(self.rb_mode_det)
-        mode_row.addWidget(self.rb_mode_seg)
-        mode_row.addStretch()
-        conv_layout.addLayout(mode_row)
+        cp_layout.addLayout(row_json)
 
         row_lbl_dst = QHBoxLayout()
         row_lbl_dst.addWidget(QLabel("Labels Output Folder:"))
@@ -732,53 +803,52 @@ class MainWindow(QMainWindow):
         btn_lbl_dst.setIconSize(QSize(16, 16))
         btn_lbl_dst.clicked.connect(lambda: self._browse_folder(self.txt_conv_labels_dst))
         row_lbl_dst.addWidget(btn_lbl_dst)
-        conv_layout.addLayout(row_lbl_dst)
+        cp_layout.addLayout(row_lbl_dst)
 
-        conv_action_row = QHBoxLayout()
         self.btn_run_convert = QPushButton("Convert COCO to YOLO (.txt)")
         self.btn_run_convert.setProperty("class", "SuccessButton")
         self.btn_run_convert.setIcon(get_svg_icon("step_convert", 18))
         self.btn_run_convert.setIconSize(QSize(18, 18))
         self.btn_run_convert.clicked.connect(self._on_run_convert)
-        conv_action_row.addWidget(self.btn_run_convert)
-        conv_layout.addLayout(conv_action_row)
+        cp_layout.addWidget(self.btn_run_convert)
 
         self.prog_convert = QProgressBar()
         self.prog_convert.setValue(0)
-        conv_layout.addWidget(self.prog_convert)
+        cp_layout.addWidget(self.prog_convert)
 
         self.lbl_conv_stats = QLabel("No conversion performed yet.")
         self.lbl_conv_stats.setStyleSheet("color: #1e293b; font-weight: 600; min-height: 24px;")
-        conv_layout.addWidget(self.lbl_conv_stats)
+        cp_layout.addWidget(self.lbl_conv_stats)
 
-        layout.addWidget(conv_box)
+        layout.addWidget(conv_paths)
 
         advance_row = QHBoxLayout()
         advance_row.addStretch()
-        self.btn_next_step_3 = QPushButton("Proceed to Step 4: Dataset Splitter")
-        self.btn_next_step_3.setProperty("class", "StepNavButton")
-        self.btn_next_step_3.setIcon(get_svg_icon("arrow_right", 16))
-        self.btn_next_step_3.setIconSize(QSize(16, 16))
-        self.btn_next_step_3.clicked.connect(lambda: self._go_to_step(3))
-        advance_row.addWidget(self.btn_next_step_3)
+        self.btn_page3_next = QPushButton("Next: Split Dataset ➔")
+        self.btn_page3_next.setProperty("class", "StepNavButton")
+        self.btn_page3_next.clicked.connect(lambda: self._go_to_step(3))
+        advance_row.addWidget(self.btn_page3_next)
         layout.addLayout(advance_row)
 
         layout.addStretch()
         return page
 
     # -----------------------------------------------------------------
-    # Page 4: Dataset Splitter (Standalone)
+    # PAGE 4: Dataset Splitter (Dedicated Standalone Screen)
     # -----------------------------------------------------------------
     def _build_page_split(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(12)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(14)
 
-        box_paths = QGroupBox("Standalone Tool: Dataset Input Sources & Destination (data/)")
-        box_paths_layout = QGridLayout(box_paths)
-        box_paths_layout.setHorizontalSpacing(10)
-        box_paths_layout.setVerticalSpacing(8)
+        # Paths Card
+        paths_card = QFrame()
+        paths_card.setProperty("class", "CardFrame")
+        box_paths_layout = QGridLayout(paths_card)
+        box_paths_layout.setContentsMargins(18, 16, 18, 16)
+        box_paths_layout.setHorizontalSpacing(12)
+        box_paths_layout.setVerticalSpacing(10)
 
         box_paths_layout.addWidget(QLabel("Images Source Folder:"), 0, 0)
         self.txt_split_img_src = QLineEdit(str(self.data_dir / "images"))
@@ -807,13 +877,15 @@ class MainWindow(QMainWindow):
         btn_split_dst.clicked.connect(lambda: self._browse_folder(self.txt_split_dst))
         box_paths_layout.addWidget(btn_split_dst, 2, 2)
 
-        layout.addWidget(box_paths)
+        layout.addWidget(paths_card)
 
-        # Split Ratio Configuration
-        box_ratios = QGroupBox("Partition Ratios (Train / Val / Test)")
-        box_ratios_layout = QGridLayout(box_ratios)
-        box_ratios_layout.setHorizontalSpacing(12)
-        box_ratios_layout.setVerticalSpacing(8)
+        # Ratios Card
+        ratios_card = QFrame()
+        ratios_card.setProperty("class", "CardFrame")
+        box_ratios_layout = QGridLayout(ratios_card)
+        box_ratios_layout.setContentsMargins(18, 16, 18, 16)
+        box_ratios_layout.setHorizontalSpacing(14)
+        box_ratios_layout.setVerticalSpacing(10)
 
         box_ratios_layout.addWidget(QLabel("Train Ratio:"), 0, 0)
         self.slider_train = QSlider(Qt.Horizontal)
@@ -855,176 +927,154 @@ class MainWindow(QMainWindow):
         self.slider_test.valueChanged.connect(self.spin_test.setValue)
         self.spin_test.valueChanged.connect(self.slider_test.setValue)
 
-        self.chk_all_images = QCheckBox("Include ALL images in dataset (background images without annotations will receive empty label files)")
+        self.chk_all_images = QCheckBox("Include ALL images in dataset (background images without annotations receive empty label files)")
         self.chk_all_images.setChecked(True)
         self.chk_all_images.setEnabled(False)
         box_ratios_layout.addWidget(self.chk_all_images, 3, 0, 1, 3)
-
-        layout.addWidget(box_ratios)
 
         self.btn_run_split = QPushButton("Split Dataset & Generate data.yaml")
         self.btn_run_split.setProperty("class", "PrimaryButton")
         self.btn_run_split.setIcon(get_svg_icon("step_split", 18))
         self.btn_run_split.setIconSize(QSize(18, 18))
         self.btn_run_split.clicked.connect(self._on_run_split)
-        layout.addWidget(self.btn_run_split)
+        box_ratios_layout.addWidget(self.btn_run_split, 4, 0, 1, 3)
 
         self.prog_split = QProgressBar()
         self.prog_split.setValue(0)
-        layout.addWidget(self.prog_split)
+        box_ratios_layout.addWidget(self.prog_split, 5, 0, 1, 3)
 
         self.lbl_split_stats = QLabel("No dataset split yet.")
         self.lbl_split_stats.setStyleSheet("color: #1e293b; font-weight: 600; min-height: 24px;")
-        layout.addWidget(self.lbl_split_stats)
+        box_ratios_layout.addWidget(self.lbl_split_stats, 6, 0, 1, 3)
+
+        layout.addWidget(ratios_card)
 
         advance_row = QHBoxLayout()
         advance_row.addStretch()
-        self.btn_next_step_4 = QPushButton("Proceed to Step 5: YOLO Auto-Trainer")
-        self.btn_next_step_4.setProperty("class", "StepNavButton")
-        self.btn_next_step_4.setIcon(get_svg_icon("arrow_right", 16))
-        self.btn_next_step_4.setIconSize(QSize(16, 16))
-        self.btn_next_step_4.clicked.connect(lambda: self._go_to_step(4))
-        advance_row.addWidget(self.btn_next_step_4)
+        self.btn_page4_next = QPushButton("Next: YOLO Auto-Trainer ➔")
+        self.btn_page4_next.setProperty("class", "StepNavButton")
+        self.btn_page4_next.clicked.connect(lambda: self._go_to_step(4))
+        advance_row.addWidget(self.btn_page4_next)
         layout.addLayout(advance_row)
 
         layout.addStretch()
         return page
 
     # -----------------------------------------------------------------
-    # Page 5: YOLO Auto-Trainer & Explorer (Standalone)
+    # PAGE 5: YOLO Auto-Trainer & Explorer (Dedicated Standalone Screen)
     # -----------------------------------------------------------------
     def _build_page_train(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(10)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(12)
 
-        box_model = QGroupBox("Model & Dataset Configuration")
-        m_layout = QGridLayout(box_model)
-        m_layout.setHorizontalSpacing(10)
-        m_layout.setVerticalSpacing(8)
+        # Model & Hyperparameters Card
+        train_card = QFrame()
+        train_card.setProperty("class", "CardFrame")
+        h_layout = QGridLayout(train_card)
+        h_layout.setContentsMargins(18, 16, 18, 16)
+        h_layout.setHorizontalSpacing(12)
+        h_layout.setVerticalSpacing(8)
 
-        m_layout.addWidget(QLabel("Task:"), 0, 0)
+        h_layout.addWidget(QLabel("Task:"), 0, 0)
         self.cmb_train_task = QComboBox()
         self.cmb_train_task.addItems(["detect", "segment"])
         self.cmb_train_task.currentIndexChanged.connect(self._update_model_presets)
-        m_layout.addWidget(self.cmb_train_task, 0, 1)
+        h_layout.addWidget(self.cmb_train_task, 0, 1)
 
-        m_layout.addWidget(QLabel("Model Preset:"), 0, 2)
+        h_layout.addWidget(QLabel("Model Preset:"), 0, 2)
         self.cmb_model_preset = QComboBox()
-        m_layout.addWidget(self.cmb_model_preset, 0, 3)
+        h_layout.addWidget(self.cmb_model_preset, 0, 3)
 
-        m_layout.addWidget(QLabel("Or Custom .pt:"), 0, 4)
+        h_layout.addWidget(QLabel("Or Custom .pt:"), 0, 4)
         self.txt_custom_model = QLineEdit()
         self.txt_custom_model.setPlaceholderText("Optional path to custom .pt weights")
-        m_layout.addWidget(self.txt_custom_model, 0, 5)
+        h_layout.addWidget(self.txt_custom_model, 0, 5)
         btn_browse_pt = QPushButton("Browse...")
         btn_browse_pt.setIcon(get_svg_icon("folder", 16))
         btn_browse_pt.setIconSize(QSize(16, 16))
         btn_browse_pt.clicked.connect(self._browse_model_pt)
-        m_layout.addWidget(btn_browse_pt, 0, 6)
+        h_layout.addWidget(btn_browse_pt, 0, 6)
 
-        m_layout.addWidget(QLabel("data.yaml Path:"), 1, 0)
+        h_layout.addWidget(QLabel("data.yaml Path:"), 1, 0)
         self.txt_data_yaml = QLineEdit(str(self.data_dir / "data.yaml"))
-        m_layout.addWidget(self.txt_data_yaml, 1, 1, 1, 5)
+        h_layout.addWidget(self.txt_data_yaml, 1, 1, 1, 5)
         btn_browse_yaml = QPushButton("Browse...")
         btn_browse_yaml.setIcon(get_svg_icon("folder", 16))
         btn_browse_yaml.setIconSize(QSize(16, 16))
         btn_browse_yaml.clicked.connect(self._browse_data_yaml)
-        m_layout.addWidget(btn_browse_yaml, 1, 6)
-
-        layout.addWidget(box_model)
-
-        box_hparams = QGroupBox("Training Hyperparameters (Intelligently Auto-Tuned & Fully Editable)")
-        h_layout = QGridLayout(box_hparams)
-        h_layout.setHorizontalSpacing(12)
-        h_layout.setVerticalSpacing(8)
+        h_layout.addWidget(btn_browse_yaml, 1, 6)
 
         self.btn_auto_tune = QPushButton("Auto-Tune Hyperparameters for Dataset")
         self.btn_auto_tune.setProperty("class", "SuccessButton")
         self.btn_auto_tune.setIcon(get_svg_icon("brain", 18))
         self.btn_auto_tune.setIconSize(QSize(18, 18))
         self.btn_auto_tune.clicked.connect(self._on_auto_tune_clicked)
-        h_layout.addWidget(self.btn_auto_tune, 0, 0, 1, 6)
+        h_layout.addWidget(self.btn_auto_tune, 2, 0, 1, 7)
 
-        h_layout.addWidget(QLabel("Epochs:"), 1, 0)
+        h_layout.addWidget(QLabel("Epochs:"), 3, 0)
         self.spin_epochs = QSpinBox()
         self.spin_epochs.setRange(1, 1000)
         self.spin_epochs.setValue(100)
-        h_layout.addWidget(self.spin_epochs, 1, 1)
+        h_layout.addWidget(self.spin_epochs, 3, 1)
 
-        h_layout.addWidget(QLabel("Batch Size:"), 1, 2)
+        h_layout.addWidget(QLabel("Batch Size:"), 3, 2)
         self.spin_batch = QSpinBox()
         self.spin_batch.setRange(-1, 256)
         self.spin_batch.setValue(8 if not torch.cuda.is_available() else 16)
         self.spin_batch.setSpecialValueText("Auto (-1)")
-        h_layout.addWidget(self.spin_batch, 1, 3)
+        h_layout.addWidget(self.spin_batch, 3, 3)
 
-        h_layout.addWidget(QLabel("Image Size:"), 1, 4)
+        h_layout.addWidget(QLabel("Image Size:"), 3, 4)
         self.spin_imgsz = QSpinBox()
         self.spin_imgsz.setRange(160, 2560)
         self.spin_imgsz.setSingleStep(32)
         self.spin_imgsz.setValue(640)
-        h_layout.addWidget(self.spin_imgsz, 1, 5)
+        h_layout.addWidget(self.spin_imgsz, 3, 5)
 
-        h_layout.addWidget(QLabel("Early Stop (Patience):"), 2, 0)
+        h_layout.addWidget(QLabel("Early Stop (Patience):"), 4, 0)
         self.spin_patience = QSpinBox()
         self.spin_patience.setRange(1, 100)
         self.spin_patience.setValue(15)
-        h_layout.addWidget(self.spin_patience, 2, 1)
+        h_layout.addWidget(self.spin_patience, 4, 1)
 
-        h_layout.addWidget(QLabel("Initial LR (lr0):"), 2, 2)
+        h_layout.addWidget(QLabel("Initial LR (lr0):"), 4, 2)
         self.spin_lr0 = QDoubleSpinBox()
         self.spin_lr0.setRange(0.00001, 0.1)
         self.spin_lr0.setDecimals(5)
         self.spin_lr0.setValue(0.01)
-        h_layout.addWidget(self.spin_lr0, 2, 3)
+        h_layout.addWidget(self.spin_lr0, 4, 3)
 
-        h_layout.addWidget(QLabel("Optimizer:"), 2, 4)
+        h_layout.addWidget(QLabel("Optimizer:"), 4, 4)
         self.cmb_optimizer = QComboBox()
         self.cmb_optimizer.addItems(["auto", "AdamW", "Adam", "SGD", "RMSProp"])
-        h_layout.addWidget(self.cmb_optimizer, 2, 5)
+        h_layout.addWidget(self.cmb_optimizer, 4, 5)
 
-        h_layout.addWidget(QLabel("Device:"), 3, 0)
-        self.txt_device = QLineEdit("0" if torch.cuda.is_available() else "cpu")
-        h_layout.addWidget(self.txt_device, 3, 1)
-
-        h_layout.addWidget(QLabel("Workers:"), 3, 2)
-        self.spin_workers = QSpinBox()
-        self.spin_workers.setRange(0, 16)
-        self.spin_workers.setValue(2)
-        h_layout.addWidget(self.spin_workers, 3, 3)
-
-        layout.addWidget(box_hparams)
-
-        box_naming = QGroupBox("Custom Run & Weights Naming")
-        naming_layout = QGridLayout(box_naming)
-        naming_layout.setHorizontalSpacing(10)
-        naming_layout.setVerticalSpacing(8)
-
-        naming_layout.addWidget(QLabel("Custom Run Name:"), 0, 0)
+        h_layout.addWidget(QLabel("Custom Run Name:"), 5, 0)
         self.txt_custom_run_name = QLineEdit("my_yolo_model")
         self.txt_custom_run_name.textChanged.connect(self._update_run_preview)
-        naming_layout.addWidget(self.txt_custom_run_name, 0, 1)
+        h_layout.addWidget(self.txt_custom_run_name, 5, 1, 1, 2)
 
-        naming_layout.addWidget(QLabel("Base Runs Folder:"), 0, 2)
+        h_layout.addWidget(QLabel("Runs Folder:"), 5, 3)
         self.txt_runs_base = QLineEdit(str(self.runs_dir))
-        naming_layout.addWidget(self.txt_runs_base, 0, 3)
+        h_layout.addWidget(self.txt_runs_base, 5, 4, 1, 2)
         btn_runs_base = QPushButton("Browse...")
         btn_runs_base.setIcon(get_svg_icon("folder", 16))
         btn_runs_base.setIconSize(QSize(16, 16))
         btn_runs_base.clicked.connect(lambda: self._browse_folder(self.txt_runs_base))
-        naming_layout.addWidget(btn_runs_base, 0, 4)
+        h_layout.addWidget(btn_runs_base, 5, 6)
 
         self.lbl_run_preview = QLabel("Output Preview: runs/detect/my_yolo_model_v1/weights/my_yolo_model.pt")
-        self.lbl_run_preview.setStyleSheet("color: #166534; font-weight: 700; min-height: 36px; line-height: 1.4;")
-        naming_layout.addWidget(self.lbl_run_preview, 1, 0, 1, 5)
+        self.lbl_run_preview.setStyleSheet("color: #166534; font-weight: 700; min-height: 28px;")
+        h_layout.addWidget(self.lbl_run_preview, 6, 0, 1, 7)
 
-        layout.addWidget(box_naming)
+        layout.addWidget(train_card)
 
         self._update_model_presets()
         self._update_run_preview()
 
+        # Action Row (Start & Stop)
         action_row = QHBoxLayout()
         self.btn_start_train = QPushButton("Start YOLO Training")
         self.btn_start_train.setProperty("class", "PrimaryButton")
@@ -1043,10 +1093,11 @@ class MainWindow(QMainWindow):
 
         layout.addLayout(action_row)
 
+        # Real-time Metrics Card (Sleep/Stress indicator style)
         metrics_card = QFrame()
         metrics_card.setProperty("class", "CardFrame")
         metrics_layout = QHBoxLayout(metrics_card)
-        metrics_layout.setContentsMargins(14, 8, 14, 8)
+        metrics_layout.setContentsMargins(18, 10, 18, 10)
         metrics_layout.setSpacing(14)
 
         def make_metric_badge(icon_name, text_lbl):
@@ -1080,12 +1131,14 @@ class MainWindow(QMainWindow):
 
         self.txt_train_log = QPlainTextEdit()
         self.txt_train_log.setReadOnly(True)
-        self.txt_train_log.setMinimumHeight(150)
+        self.txt_train_log.setMinimumHeight(140)
         layout.addWidget(self.txt_train_log, stretch=1)
 
-        # Workspace Explorer Box (Integrated in Tool 5)
-        box_quick = QGroupBox("Quick Open Workspaces & data.yaml Preview")
-        quick_layout = QVBoxLayout(box_quick)
+        # Quick Explorer Box
+        quick_card = QFrame()
+        quick_card.setProperty("class", "CardFrame")
+        quick_layout = QVBoxLayout(quick_card)
+        quick_layout.setContentsMargins(16, 12, 16, 12)
 
         quick_btns = QHBoxLayout()
         btn_open_data = QPushButton("Open data/ Folder")
@@ -1110,68 +1163,11 @@ class MainWindow(QMainWindow):
 
         self.txt_yaml_preview = QPlainTextEdit()
         self.txt_yaml_preview.setReadOnly(True)
-        self.txt_yaml_preview.setMaximumHeight(120)
+        self.txt_yaml_preview.setMaximumHeight(100)
         quick_layout.addWidget(self.txt_yaml_preview)
 
-        layout.addWidget(box_quick)
-
+        layout.addWidget(quick_card)
         return page
-
-    # -----------------------------------------------------------------
-    # Stepper Bottom Footer Navigation Bar
-    # -----------------------------------------------------------------
-    def _build_stepper_footer(self) -> QFrame:
-        footer = QFrame()
-        footer.setProperty("class", "StepperFooter")
-        layout = QHBoxLayout(footer)
-        layout.setContentsMargins(8, 4, 8, 4)
-
-        self.btn_prev_step = QPushButton("Previous Tool")
-        self.btn_prev_step.setProperty("class", "StepNavButton")
-        self.btn_prev_step.setIcon(get_svg_icon("arrow_left", 18))
-        self.btn_prev_step.setIconSize(QSize(18, 18))
-        self.btn_prev_step.clicked.connect(self._on_prev_step)
-        layout.addWidget(self.btn_prev_step)
-
-        layout.addStretch()
-
-        self.lbl_step_indicator = QLabel("Tool 1 of 5: CVAT Downloader")
-        self.lbl_step_indicator.setStyleSheet("font-weight: 700; color: #166534; font-size: 13px; min-height: 22px;")
-        layout.addWidget(self.lbl_step_indicator)
-
-        layout.addStretch()
-
-        self.btn_next_step = QPushButton("Next Tool")
-        self.btn_next_step.setProperty("class", "StepNavButton")
-        self.btn_next_step.setIcon(get_svg_icon("arrow_right", 18))
-        self.btn_next_step.setIconSize(QSize(18, 18))
-        self.btn_next_step.clicked.connect(self._on_next_step)
-        layout.addWidget(self.btn_next_step)
-
-        return footer
-
-    # -----------------------------------------------------------------
-    # Global Status Bar
-    # -----------------------------------------------------------------
-    def _build_global_status_bar(self) -> QWidget:
-        bar = QFrame()
-        bar.setProperty("class", "CardFrame")
-        layout = QHBoxLayout(bar)
-        layout.setContentsMargins(12, 6, 12, 6)
-
-        self.lbl_status_icon = QLabel()
-        self.lbl_status_icon.setPixmap(get_svg_pixmap("check", 16, 16))
-        layout.addWidget(self.lbl_status_icon)
-
-        self.lbl_global_status = QLabel("Ready")
-        self.lbl_global_status.setStyleSheet("font-weight: 600; color: #166534;")
-        layout.addWidget(self.lbl_global_status, stretch=1)
-
-        lbl_workspace = QLabel(f"Data Directory: {self.data_dir}")
-        lbl_workspace.setStyleSheet("color: #64748b; font-size: 11px;")
-        layout.addWidget(lbl_workspace)
-
-        return bar
 
     # =================================================================
     # Common Event Handlers & Slots
@@ -1200,24 +1196,36 @@ class MainWindow(QMainWindow):
 
         self.pages.setCurrentIndex(step_idx)
 
-        # Update button styles in Stepper Bar
-        for idx, btn in enumerate(self.step_buttons):
+        # Update Top App Title
+        self.lbl_top_title.setText(self.PAGE_TITLES[step_idx])
+        self.btn_top_back.setEnabled(step_idx > 0)
+
+        # Update Greeting Header
+        tag_class, tag_text = self.PAGE_TAGS[step_idx]
+        self.lbl_page_tag.setProperty("class", tag_text if False else tag_class)
+        self.lbl_page_tag.setText(tag_text)
+        self.lbl_page_tag.style().unpolish(self.lbl_page_tag)
+        self.lbl_page_tag.style().polish(self.lbl_page_tag)
+
+        self.lbl_greeting_title = self.findChild(QLabel, "greetingTitle")
+        if self.lbl_greeting_title:
+            self.lbl_greeting_title.setText(f"{self.PAGE_TITLES[step_idx]} 👋")
+
+        self.lbl_greeting_sub = self.findChild(QLabel, "greetingSubtitle")
+        if self.lbl_greeting_sub:
+            self.lbl_greeting_sub.setText(self.PAGE_SUBTITLES[step_idx])
+
+        # Update Footer Carousel Step Pills
+        for idx, pill in enumerate(self.step_pills):
             if idx == step_idx:
-                btn.setProperty("class", "StepButtonActive")
-            elif self.step_completed[idx]:
-                btn.setProperty("class", "StepButtonCompleted")
+                pill.setProperty("class", "StepPillActive")
             else:
-                btn.setProperty("class", "StepButton")
-            btn.style().unpolish(btn)
-            btn.style().polish(btn)
+                pill.setProperty("class", "StepPill")
+            pill.style().unpolish(pill)
+            pill.style().polish(pill)
 
-        # Update Footer
-        self.btn_prev_step.setEnabled(step_idx > 0)
-        self.btn_next_step.setEnabled(step_idx < self.pages.count() - 1)
-        self.lbl_step_indicator.setText(f"Tool {step_idx + 1} of {self.pages.count()}: {self.STEP_DESCRIPTIONS[step_idx][0]}")
-
-        # Update Dynamic Guidance Box
-        self.lbl_guide.setText(self.STEP_GUIDES[step_idx])
+        self.btn_footer_prev.setEnabled(step_idx > 0)
+        self.btn_footer_next.setEnabled(step_idx < self.pages.count() - 1)
 
         # If navigating to Step 5, refresh yaml preview
         if step_idx == 4:
@@ -1260,7 +1268,6 @@ class MainWindow(QMainWindow):
         username = login_info.get("username") or "User"
         server_url = login_info.get("server_url")
         self.lbl_login_status.setText(f"Connected successfully as {username}!")
-        self.lbl_server_info.setText(f"Connected: {server_url} (User: {username})")
 
         # Populate projects dropdown
         self.cmb_proj_filter.blockSignals(True)
@@ -1273,7 +1280,6 @@ class MainWindow(QMainWindow):
         self.all_tasks_data = tasks
         self._populate_tasks_table(self.all_tasks_data)
         self.lbl_cvat_status.setText(f"Loaded {len(tasks)} tasks across {len(projects)} projects.")
-        self.step_completed[0] = True
 
     def _on_auth_error(self, err_msg: str):
         self.btn_do_login.setEnabled(True)
@@ -1395,14 +1401,13 @@ class MainWindow(QMainWindow):
         self.mascot.set_state(DancingSvgMascot.STATE_SUCCESS)
         self.prog_dl.setValue(self.prog_dl.maximum())
         self.lbl_cvat_status.setText(f"Successfully downloaded and extracted {len(results)} tasks into data/raw_tasks!")
-        self.step_completed[0] = True
 
         QMessageBox.information(
             self, "Download Complete",
             f"Successfully downloaded {len(results)} tasks!\n\n"
             f"All images extracted and flattened (default folder removed).\n"
             f"Location: {self.txt_dl_folder.text()}\n\n"
-            f"You can now switch to '2. Merge Datasets' to unify them."
+            f"Click 'Next: Merge Datasets' below to proceed."
         )
 
     def _on_download_error(self, err_msg: str):
@@ -1442,7 +1447,6 @@ class MainWindow(QMainWindow):
         self.btn_run_merge.setEnabled(True)
         self.mascot.set_state(DancingSvgMascot.STATE_SUCCESS)
         self.prog_merge.setValue(self.prog_merge.maximum())
-        self.step_completed[1] = True
 
         msg = (
             f"Merge Complete!\n"
@@ -1501,7 +1505,6 @@ class MainWindow(QMainWindow):
         self.btn_run_convert.setEnabled(True)
         self.mascot.set_state(DancingSvgMascot.STATE_SUCCESS)
         self.prog_convert.setValue(self.prog_convert.maximum())
-        self.step_completed[2] = True
 
         msg = (
             f"Conversion Complete! (Mode: {stats['mode'].upper()})\n"
@@ -1570,7 +1573,6 @@ class MainWindow(QMainWindow):
         self.btn_run_split.setEnabled(True)
         self.mascot.set_state(DancingSvgMascot.STATE_SUCCESS)
         self.prog_split.setValue(self.prog_split.maximum())
-        self.step_completed[3] = True
 
         yaml_path = stats.get("data_yaml")
         if yaml_path:
@@ -1698,7 +1700,6 @@ class MainWindow(QMainWindow):
         self.btn_start_train.setEnabled(False)
         self.btn_stop_train.setEnabled(True)
         self.mascot.set_state(DancingSvgMascot.STATE_TRAINING)
-        self.lbl_global_status.setText("Training YOLO model...")
         self.txt_train_log.clear()
 
         self.active_worker = TrainWorker(
@@ -1718,7 +1719,6 @@ class MainWindow(QMainWindow):
 
     def _on_stop_training(self):
         self.trainer_engine.stop_training()
-        self.lbl_global_status.setText("Stopping training gracefully...")
         self.txt_train_log.appendPlainText("⏹️ User requested training stop. Finalizing current epoch...")
 
     def _on_train_log(self, msg: str):
@@ -1743,8 +1743,6 @@ class MainWindow(QMainWindow):
         self.btn_stop_train.setEnabled(False)
         self.mascot.set_state(DancingSvgMascot.STATE_SUCCESS)
         self.prog_train.setValue(100)
-        self.lbl_global_status.setText("Training session completed!")
-        self.step_completed[4] = True
         self._update_run_preview()
 
         run_dir = res.get("run_dir")
@@ -1758,14 +1756,12 @@ class MainWindow(QMainWindow):
             f"• Custom Named Weights: {custom_pt}\n\n"
             f"Weights and logs are saved in runs/ and weights/."
         )
-        self.lbl_global_status.setText("Training completed successfully!")
         QMessageBox.information(self, "Training Complete", summary)
 
     def _on_train_error(self, err_msg: str):
         self.btn_start_train.setEnabled(True)
         self.btn_stop_train.setEnabled(False)
         self.mascot.set_state(DancingSvgMascot.STATE_IDLE)
-        self.lbl_global_status.setText(f"Training Failed: {err_msg}")
         self.txt_train_log.appendPlainText(f"\n❌ Training Error: {err_msg}")
         QMessageBox.critical(self, "Training Error", f"Training encountered an error:\n{err_msg}")
 
