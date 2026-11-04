@@ -1,7 +1,8 @@
 """
 Main Window for the CVAT-to-YOLO GUI application.
-Provides a comprehensive step-by-step wizard workflow (Pages):
-1. CVAT Authentication & Download (COCO 1.0 + unzipping + cleanup default folder)
+Features a dedicated Authentication Screen (Login Page) followed by
+an enterprise 5-Step Wizard Workflow:
+1. CVAT Task Explorer & Download (COCO 1.0 + unzipping + cleanup default folder)
 2. Task Merging & COCO-to-YOLO Conversion (Detection & Segmentation)
 3. Train/Val/Test Splitter (including all background images)
 4. YOLO Training with Auto-Tuning, Early Stopping, and Auto-Versioning
@@ -37,6 +38,27 @@ from ui.theme import DARK_STYLESHEET
 # =====================================================================
 # Background Worker Threads
 # =====================================================================
+
+class CvatAuthWorker(QThread):
+    finished_signal = pyqtSignal(dict, list, list)  # login_info, projects, tasks
+    error_signal = pyqtSignal(str)
+
+    def __init__(self, client: CvatClientWrapper, url: str, username: str, password: str):
+        super().__init__()
+        self.client = client
+        self.url = url
+        self.username = username
+        self.password = password
+
+    def run(self):
+        try:
+            login_info = self.client.login(self.url, self.username, self.password)
+            projects = self.client.refresh_projects()
+            tasks = self.client.get_tasks()
+            self.finished_signal.emit(login_info, projects, tasks)
+        except Exception as e:
+            self.error_signal.emit(str(e))
+
 
 class CvatFetchWorker(QThread):
     finished_signal = pyqtSignal(list, list)  # projects, tasks
@@ -233,12 +255,12 @@ class TrainWorker(QThread):
 
 
 # =====================================================================
-# Main Application Window (Step-by-Step Pages)
+# Main Application Window
 # =====================================================================
 
 class MainWindow(QMainWindow):
     STEP_DESCRIPTIONS = [
-        ("Step 1: Download CVAT", "🌐 ดาวน์โหลด Annotation COCO 1.0 & รูปภาพ พร้อมลบ /images/default"),
+        ("Step 1: Task Explorer", "🌐 สำรวจและดาวน์โหลด Tasks (COCO 1.0 + Clean /images/default)"),
         ("Step 2: Merge & Convert", "🔄 รวม Datasets เข้าด้วยกัน & แปลง COCO เป็น YOLO (Det/Seg)"),
         ("Step 3: Split Dataset", "✂️ แบ่ง Train/Val/Test โดยนำทุกรูปภาพเข้าร่วม (รวม Backgrounds)"),
         ("Step 4: YOLO Training", "🧠 ปรับ Auto-Tune Hyperparameters & เริ่ม Train พร้อม Early Stopping"),
@@ -246,7 +268,7 @@ class MainWindow(QMainWindow):
     ]
 
     STEP_GUIDES = [
-        "💡 ขั้นตอนที่ 1: ใส่ Username/Password ของ CVAT จากนั้นเลือก Tasks หรือฟิลเตอร์ตาม stage/state แล้วกดดาวน์โหลด ระบบจะแตกไฟล์และย้ายรูปออกจาก /images/default ให้เองครับ",
+        "💡 ขั้นตอนที่ 1: เลือก Tasks ที่ต้องการดาวน์โหลด หรือฟิลเตอร์ตาม stage/state แล้วกด 'Download & Auto-Extract Tasks' ระบบจะแตกไฟล์และย้ายรูปออกจาก /images/default ให้เองครับ",
         "💡 ขั้นตอนที่ 2: กด '🧩 Merge Datasets' เพื่อรวมข้อมูลและแก้ชื่อภาพซ้ำ จากนั้นเลือกว่าจะแปลงเป็น Detection (Bounding Box) หรือ Segmentation (Polygon) แล้วกด Convert",
         "💡 ขั้นตอนที่ 3: ปรับสัดส่วนเปอร์เซ็นต์ Train / Val / Test ตามต้องการ (รูปภาพทุกรูปจะถูกนำมารวม 100% แม้ไม่มี Label ก็ตาม) แล้วกด Split",
         "💡 ขั้นตอนที่ 4: กดปุ่ม '⚡ Auto-Tune Hyperparameters' เพื่อตั้งค่าโมเดลให้เหมาะกับจำนวนภาพ ตั้งชื่อโฟลเดอร์รัน แล้วกด Start YOLO Training ได้เลย!",
@@ -255,7 +277,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("CVAT to YOLO Studio • Enterprise Step Wizard")
+        self.setWindowTitle("CVAT to YOLO Studio • Enterprise AI Pipeline")
         self.resize(1260, 880)
         self.setMinimumSize(1020, 740)
 
@@ -280,25 +302,160 @@ class MainWindow(QMainWindow):
 
         self._init_ui()
         self.setStyleSheet(DARK_STYLESHEET)
-        self._go_to_step(0)
+
+        # Start on dedicated Login Page
+        self.root_stack.setCurrentIndex(0)
 
     def _init_ui(self):
         central_widget = QWidget(self)
         central_widget.setObjectName("centralWidget")
         self.setCentralWidget(central_widget)
 
-        main_layout = QVBoxLayout(central_widget)
-        main_layout.setContentsMargins(16, 12, 16, 12)
-        main_layout.setSpacing(10)
+        root_layout = QVBoxLayout(central_widget)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        root_layout.setSpacing(0)
 
-        # 1. Header with Animated Mascot
-        main_layout.addWidget(self._build_header())
+        # Root Stack: 0 -> Dedicated Login Page, 1 -> Studio Wizard Workflow
+        self.root_stack = QStackedWidget()
+        self.view_login = self._build_login_view()
+        self.view_studio = self._build_studio_view()
+
+        self.root_stack.addWidget(self.view_login)
+        self.root_stack.addWidget(self.view_studio)
+
+        root_layout.addWidget(self.root_stack)
+
+    # =================================================================
+    # VIEW 0: DEDICATED LOGIN PAGE
+    # =================================================================
+
+    def _build_login_view(self) -> QWidget:
+        view = QWidget()
+        layout = QVBoxLayout(view)
+        layout.setContentsMargins(20, 20, 20, 20)
+
+        # Centering layout with vertical stretches
+        layout.addStretch(1)
+
+        center_row = QHBoxLayout()
+        center_row.addStretch(1)
+
+        # Glowing Login Card
+        card = QFrame()
+        card.setProperty("class", "LoginCard")
+        card.setFixedWidth(500)
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(32, 28, 32, 28)
+        card_layout.setSpacing(14)
+
+        # Dancing Mascot at top of Login Card
+        mascot_box = QHBoxLayout()
+        self.login_mascot = DancingSvgMascot(size=120)
+        mascot_box.addStretch()
+        mascot_box.addWidget(self.login_mascot)
+        mascot_box.addStretch()
+        card_layout.addLayout(mascot_box)
+
+        # Title & Subtitle
+        lbl_title = QLabel("CVAT Portal Sign-In")
+        lbl_title.setObjectName("loginTitle")
+        lbl_title.setAlignment(Qt.AlignCenter)
+        card_layout.addWidget(lbl_title)
+
+        lbl_sub = QLabel("Enter your CVAT credentials to access datasets, images & annotations.")
+        lbl_sub.setObjectName("loginSubtitle")
+        lbl_sub.setAlignment(Qt.AlignCenter)
+        lbl_sub.setWordWrap(True)
+        card_layout.addWidget(lbl_sub)
+
+        card_layout.addSpacing(6)
+
+        # Error / Alert Banner (Hidden by default)
+        self.lbl_login_alert = QLabel()
+        self.lbl_login_alert.setProperty("class", "AlertError")
+        self.lbl_login_alert.setWordWrap(True)
+        self.lbl_login_alert.hide()
+        card_layout.addWidget(self.lbl_login_alert)
+
+        # Form Inputs
+        lbl_url = QLabel("CVAT Server URL:")
+        lbl_url.setStyleSheet("font-weight: 600; color: #94a3b8;")
+        card_layout.addWidget(lbl_url)
+        self.txt_login_url = QLineEdit("http://1.10.131.222:8080/projects")
+        self.txt_login_url.setProperty("class", "LoginInput")
+        card_layout.addWidget(self.txt_login_url)
+
+        lbl_user = QLabel("Username:")
+        lbl_user.setStyleSheet("font-weight: 600; color: #94a3b8;")
+        card_layout.addWidget(lbl_user)
+        self.txt_login_user = QLineEdit()
+        self.txt_login_user.setPlaceholderText("Enter your CVAT username")
+        self.txt_login_user.setProperty("class", "LoginInput")
+        card_layout.addWidget(self.txt_login_user)
+
+        lbl_pass = QLabel("Password:")
+        lbl_pass.setStyleSheet("font-weight: 600; color: #94a3b8;")
+        card_layout.addWidget(lbl_pass)
+        self.txt_login_pass = QLineEdit()
+        self.txt_login_pass.setEchoMode(QLineEdit.Password)
+        self.txt_login_pass.setPlaceholderText("Enter your password")
+        self.txt_login_pass.setProperty("class", "LoginInput")
+        self.txt_login_pass.returnPressed.connect(self._on_do_login)
+        card_layout.addWidget(self.txt_login_pass)
+
+        # Status Label
+        self.lbl_login_status = QLabel("")
+        self.lbl_login_status.setAlignment(Qt.AlignCenter)
+        self.lbl_login_status.setStyleSheet("color: #38bdf8; font-weight: 600;")
+        card_layout.addWidget(self.lbl_login_status)
+
+        # Login Action Button
+        self.btn_do_login = QPushButton("🚀 Sign In & Launch Studio")
+        self.btn_do_login.setProperty("class", "LoginButton")
+        self.btn_do_login.setCursor(Qt.PointingHandCursor)
+        self.btn_do_login.clicked.connect(self._on_do_login)
+        card_layout.addWidget(self.btn_do_login)
+
+        # Offline / Local Dataset Skip Button
+        card_layout.addSpacing(4)
+        btn_skip = QPushButton("📁 Work with Local Datasets (Skip Login / Offline Mode)")
+        btn_skip.setProperty("class", "SkipLoginButton")
+        btn_skip.setCursor(Qt.PointingHandCursor)
+        btn_skip.clicked.connect(self._on_skip_login)
+        card_layout.addWidget(btn_skip, alignment=Qt.AlignCenter)
+
+        center_row.addWidget(card)
+        center_row.addStretch(1)
+
+        layout.addLayout(center_row)
+        layout.addStretch(1)
+
+        # Version stamp
+        lbl_foot = QLabel("CVAT to YOLO Studio v2.0 • Enterprise Edition")
+        lbl_foot.setStyleSheet("color: #475569; font-size: 11px;")
+        lbl_foot.setAlignment(Qt.AlignCenter)
+        layout.addWidget(lbl_foot)
+
+        return view
+
+    # =================================================================
+    # VIEW 1: MAIN STUDIO WIZARD WORKFLOW (5 PAGES)
+    # =================================================================
+
+    def _build_studio_view(self) -> QWidget:
+        view = QWidget()
+        layout = QVBoxLayout(view)
+        layout.setContentsMargins(16, 12, 16, 12)
+        layout.setSpacing(10)
+
+        # 1. Header with Animated Mascot & User Profile Info
+        layout.addWidget(self._build_studio_header())
 
         # 2. Interactive Stepper Bar (Step 1 -> 5)
-        main_layout.addWidget(self._build_stepper_bar())
+        layout.addWidget(self._build_stepper_bar())
 
         # 3. Dynamic Guide Box
-        main_layout.addWidget(self._build_guide_box())
+        layout.addWidget(self._build_guide_box())
 
         # 4. Multi-Page Container (QStackedWidget)
         self.pages = QStackedWidget()
@@ -307,24 +464,25 @@ class MainWindow(QMainWindow):
         self.pages.addWidget(self._build_page_split())
         self.pages.addWidget(self._build_page_train())
         self.pages.addWidget(self._build_page_explorer())
-        main_layout.addWidget(self.pages, stretch=1)
+        layout.addWidget(self.pages, stretch=1)
 
         # 5. Bottom Stepper Footer Navigation (< Previous | Step X of 5 | Next >)
-        main_layout.addWidget(self._build_stepper_footer())
+        layout.addWidget(self._build_stepper_footer())
 
         # 6. Global Status Bar
-        main_layout.addWidget(self._build_global_status_bar())
+        layout.addWidget(self._build_global_status_bar())
+
+        return view
 
     # -----------------------------------------------------------------
-    # UI Header
+    # Studio Header
     # -----------------------------------------------------------------
-    def _build_header(self) -> QFrame:
+    def _build_studio_header(self) -> QFrame:
         card = QFrame()
         card.setProperty("class", "HeaderCard")
         layout = QHBoxLayout(card)
         layout.setContentsMargins(18, 10, 18, 10)
 
-        # Title & Subtitle
         text_layout = QVBoxLayout()
         text_layout.setSpacing(3)
 
@@ -347,20 +505,35 @@ class MainWindow(QMainWindow):
         subtitle_lbl.setObjectName("subtitleLabel")
         text_layout.addWidget(subtitle_lbl)
 
-        # Hardware pill
+        # Profile & Status Row
+        profile_row = QHBoxLayout()
+        self.lbl_user_badge = QLabel("👤 Connected: Anonymous")
+        self.lbl_user_badge.setStyleSheet("color: #38bdf8; font-weight: 700; font-size: 11.5px;")
+        profile_row.addWidget(self.lbl_user_badge)
+
+        btn_logout = QPushButton("🚪 Logout")
+        btn_logout.setProperty("class", "LogoutButton")
+        btn_logout.setCursor(Qt.PointingHandCursor)
+        btn_logout.clicked.connect(self._on_logout)
+        profile_row.addWidget(btn_logout)
+
+        profile_row.addSpacing(12)
+
         cuda_ok = torch.cuda.is_available()
         hw_text = f"Hardware: {'⚡ NVIDIA GPU (' + torch.cuda.get_device_name(0) + ')' if cuda_ok else '💻 CPU Mode'}"
         self.hw_badge = QLabel(hw_text)
         self.hw_badge.setProperty("class", "BadgeSuccess" if cuda_ok else "BadgeInfo")
-        text_layout.addWidget(self.hw_badge)
+        profile_row.addWidget(self.hw_badge)
+        profile_row.addStretch()
+
+        text_layout.addLayout(profile_row)
 
         layout.addLayout(text_layout, stretch=1)
 
-        # Mascot Container
+        # Studio Mascot Container
         mascot_box = QVBoxLayout()
         mascot_box.setAlignment(Qt.AlignCenter)
 
-        # Dancing SVG Mascot ("Byte")
         self.mascot = DancingSvgMascot(size=105)
         mascot_box.addWidget(self.mascot, alignment=Qt.AlignCenter)
 
@@ -384,7 +557,7 @@ class MainWindow(QMainWindow):
 
         self.step_buttons: list[QPushButton] = []
         step_titles = [
-            ("1. CVAT Download", "Fetch & Flatten Images"),
+            ("1. Task Explorer", "Fetch & Flatten Images"),
             ("2. Merge & Convert", "COCO 1.0 to YOLO"),
             ("3. Dataset Splitter", "Train/Val/Test All Imgs"),
             ("4. YOLO Auto-Trainer", "Auto-Tune & Train Model"),
@@ -396,7 +569,6 @@ class MainWindow(QMainWindow):
             btn.setProperty("class", "StepButton")
             btn.setText(f"{title}\n{sub}")
             btn.setCursor(Qt.PointingHandCursor)
-            # Capture idx with lambda
             btn.clicked.connect(lambda checked, step_idx=idx: self._go_to_step(step_idx))
             layout.addWidget(btn, stretch=1)
             self.step_buttons.append(btn)
@@ -420,7 +592,7 @@ class MainWindow(QMainWindow):
         return box
 
     # -----------------------------------------------------------------
-    # Page 1: CVAT Connect & Download
+    # Page 1: CVAT Task Explorer & Download
     # -----------------------------------------------------------------
     def _build_page_cvat(self) -> QWidget:
         page = QWidget()
@@ -428,35 +600,21 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(10)
 
-        # CVAT Credentials Box
-        auth_card = QFrame()
-        auth_card.setProperty("class", "CardFrame")
-        auth_layout = QGridLayout(auth_card)
-        auth_layout.setContentsMargins(14, 12, 14, 12)
-        auth_layout.setHorizontalSpacing(10)
-        auth_layout.setVerticalSpacing(8)
+        # Connection Info & Quick Refresh Bar
+        conn_card = QFrame()
+        conn_card.setProperty("class", "CardFrame")
+        conn_layout = QHBoxLayout(conn_card)
+        conn_layout.setContentsMargins(14, 8, 14, 8)
 
-        auth_layout.addWidget(QLabel("CVAT Server URL:"), 0, 0)
-        self.txt_cvat_url = QLineEdit("http://1.10.131.222:8080/projects")
-        auth_layout.addWidget(self.txt_cvat_url, 0, 1)
+        self.lbl_server_info = QLabel("Connected Server: http://1.10.131.222:8080")
+        self.lbl_server_info.setStyleSheet("color: #38bdf8; font-weight: 600;")
+        conn_layout.addWidget(self.lbl_server_info, stretch=1)
 
-        auth_layout.addWidget(QLabel("Username:"), 0, 2)
-        self.txt_cvat_user = QLineEdit()
-        self.txt_cvat_user.setPlaceholderText("Enter username")
-        auth_layout.addWidget(self.txt_cvat_user, 0, 3)
+        btn_refresh_tasks = QPushButton("🔄 Refresh Tasks from Server")
+        btn_refresh_tasks.clicked.connect(self._fetch_cvat_tasks)
+        conn_layout.addWidget(btn_refresh_tasks)
 
-        auth_layout.addWidget(QLabel("Password:"), 0, 4)
-        self.txt_cvat_pass = QLineEdit()
-        self.txt_cvat_pass.setEchoMode(QLineEdit.Password)
-        self.txt_cvat_pass.setPlaceholderText("Enter password")
-        auth_layout.addWidget(self.txt_cvat_pass, 0, 5)
-
-        self.btn_cvat_login = QPushButton("🔑 Connect & Fetch Tasks")
-        self.btn_cvat_login.setProperty("class", "PrimaryButton")
-        self.btn_cvat_login.clicked.connect(self._on_cvat_login)
-        auth_layout.addWidget(self.btn_cvat_login, 0, 6)
-
-        layout.addWidget(auth_card)
+        layout.addWidget(conn_card)
 
         # Filter Card (Project, Stage, State, Search)
         filter_card = QFrame()
@@ -538,7 +696,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.prog_dl)
 
         status_row = QHBoxLayout()
-        self.lbl_cvat_status = QLabel("Ready to connect to CVAT.")
+        self.lbl_cvat_status = QLabel("Select tasks above to download.")
         status_row.addWidget(self.lbl_cvat_status, stretch=1)
 
         self.btn_next_step_1 = QPushButton("Proceed to Step 2: Merge & Convert ➔")
@@ -598,7 +756,6 @@ class MainWindow(QMainWindow):
         conv_layout = QVBoxLayout(conv_box)
         conv_layout.setSpacing(10)
 
-        # Task Selection: Detection vs Segmentation
         mode_row = QHBoxLayout()
         mode_row.addWidget(QLabel("YOLO Task Mode:"))
         self.rb_mode_det = QRadioButton("🎯 Detection (Converts Segmentation Polygons to Normalized Bounding Boxes)")
@@ -637,7 +794,6 @@ class MainWindow(QMainWindow):
         self.prog_merge_conv.setValue(0)
         layout.addWidget(self.prog_merge_conv)
 
-        # Step advance row
         advance_row = QHBoxLayout()
         advance_row.addStretch()
         self.btn_next_step_2 = QPushButton("Proceed to Step 3: Dataset Splitter ➔")
@@ -692,7 +848,6 @@ class MainWindow(QMainWindow):
         box_ratios_layout.setHorizontalSpacing(12)
         box_ratios_layout.setVerticalSpacing(8)
 
-        # Train Ratio
         box_ratios_layout.addWidget(QLabel("Train Ratio:"), 0, 0)
         self.slider_train = QSlider(Qt.Horizontal)
         self.slider_train.setRange(10, 95)
@@ -704,7 +859,6 @@ class MainWindow(QMainWindow):
         self.spin_train.setSuffix("%")
         box_ratios_layout.addWidget(self.spin_train, 0, 2)
 
-        # Val Ratio
         box_ratios_layout.addWidget(QLabel("Validation Ratio:"), 1, 0)
         self.slider_val = QSlider(Qt.Horizontal)
         self.slider_val.setRange(5, 50)
@@ -716,7 +870,6 @@ class MainWindow(QMainWindow):
         self.spin_val.setSuffix("%")
         box_ratios_layout.addWidget(self.spin_val, 1, 2)
 
-        # Test Ratio
         box_ratios_layout.addWidget(QLabel("Test Ratio:"), 2, 0)
         self.slider_test = QSlider(Qt.Horizontal)
         self.slider_test.setRange(0, 40)
@@ -728,7 +881,6 @@ class MainWindow(QMainWindow):
         self.spin_test.setSuffix("%")
         box_ratios_layout.addWidget(self.spin_test, 2, 2)
 
-        # Connect sliders to spinboxes
         self.slider_train.valueChanged.connect(self.spin_train.setValue)
         self.spin_train.valueChanged.connect(self.slider_train.setValue)
         self.slider_val.valueChanged.connect(self.spin_val.setValue)
@@ -736,15 +888,13 @@ class MainWindow(QMainWindow):
         self.slider_test.valueChanged.connect(self.spin_test.setValue)
         self.spin_test.valueChanged.connect(self.slider_test.setValue)
 
-        # Crucial Requirement: Include ALL images (labeled + unannotated background images)
         self.chk_all_images = QCheckBox("☑️ Include ALL images in dataset (background images without annotations will receive empty label files)")
         self.chk_all_images.setChecked(True)
-        self.chk_all_images.setEnabled(False)  # Enforce requirement
+        self.chk_all_images.setEnabled(False)
         box_ratios_layout.addWidget(self.chk_all_images, 3, 0, 1, 3)
 
         layout.addWidget(box_ratios)
 
-        # Action Button & Progress
         self.btn_run_split = QPushButton("📦 Split Dataset & Generate data.yaml")
         self.btn_run_split.setProperty("class", "PrimaryButton")
         self.btn_run_split.clicked.connect(self._on_run_split)
@@ -757,7 +907,6 @@ class MainWindow(QMainWindow):
         self.lbl_split_stats = QLabel("No dataset split yet.")
         layout.addWidget(self.lbl_split_stats)
 
-        # Step advance row
         advance_row = QHBoxLayout()
         advance_row.addStretch()
         self.btn_next_step_3 = QPushButton("Proceed to Step 4: YOLO Training ➔")
@@ -778,7 +927,6 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(10)
 
-        # Upper row: Model selection & Dataset yaml
         box_model = QGroupBox("Model & Dataset Configuration")
         m_layout = QGridLayout(box_model)
         m_layout.setHorizontalSpacing(10)
@@ -811,19 +959,16 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(box_model)
 
-        # Hyperparameters Card (Auto-Tune + User Editable)
         box_hparams = QGroupBox("Training Hyperparameters (Intelligently Auto-Tuned & Fully Editable)")
         h_layout = QGridLayout(box_hparams)
         h_layout.setHorizontalSpacing(12)
         h_layout.setVerticalSpacing(8)
 
-        # Auto-Tune Trigger Button
         self.btn_auto_tune = QPushButton("⚡ Auto-Tune Hyperparameters for Dataset")
         self.btn_auto_tune.setProperty("class", "SuccessButton")
         self.btn_auto_tune.clicked.connect(self._on_auto_tune_clicked)
         h_layout.addWidget(self.btn_auto_tune, 0, 0, 1, 6)
 
-        # Fields
         h_layout.addWidget(QLabel("Epochs:"), 1, 0)
         self.spin_epochs = QSpinBox()
         self.spin_epochs.setRange(1, 1000)
@@ -844,13 +989,10 @@ class MainWindow(QMainWindow):
         self.spin_imgsz.setValue(640)
         h_layout.addWidget(self.spin_imgsz, 1, 5)
 
-        # Early Stopping / Patience requirement:
-        # "หยุด train เมื่อค่าเท่าเดิมหรือไม่ดีขึ้นด้วย ขอแบบโหดๆ"
         h_layout.addWidget(QLabel("Early Stop (Patience):"), 2, 0)
         self.spin_patience = QSpinBox()
         self.spin_patience.setRange(1, 100)
         self.spin_patience.setValue(15)
-        self.spin_patience.setToolTip("Stops training automatically if validation fitness does not improve for this many epochs")
         h_layout.addWidget(self.spin_patience, 2, 1)
 
         h_layout.addWidget(QLabel("Initial LR (lr0):"), 2, 2)
@@ -877,8 +1019,6 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(box_hparams)
 
-        # Folder & Weights Naming Requirement:
-        # "มีให้ตั้งชื่อ folder ด้วยว่าจะเก็บไว้ไหนเช่น runs/segment/(ตรงนี้ตั้งชื่อได้และมี _v(1 ถ้ารันชื่อเดียวกันอีกรอบให้เป็น v_2, v_3, _v...))/weights/(ตรง best.pt ให้ใช้ชื่อตาม folderที่ user ตั้ง)"
         box_naming = QGroupBox("Custom Run & Weights Naming")
         naming_layout = QGridLayout(box_naming)
         naming_layout.setHorizontalSpacing(10)
@@ -902,11 +1042,9 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(box_naming)
 
-        # Initialize presets after controls exist
         self._update_model_presets()
         self._update_run_preview()
 
-        # Training Action Buttons & Live Metrics Row
         action_row = QHBoxLayout()
         self.btn_start_train = QPushButton("🚀 Start YOLO Training")
         self.btn_start_train.setProperty("class", "PrimaryButton")
@@ -921,7 +1059,6 @@ class MainWindow(QMainWindow):
 
         layout.addLayout(action_row)
 
-        # Real-time Metrics Card
         metrics_card = QFrame()
         metrics_card.setProperty("class", "CardFrame")
         metrics_layout = QHBoxLayout(metrics_card)
@@ -939,17 +1076,14 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(metrics_card)
 
-        # Live Epoch Progress Bar
         self.prog_train = QProgressBar()
         self.prog_train.setValue(0)
         layout.addWidget(self.prog_train)
 
-        # Live Terminal Logs
         self.txt_train_log = QPlainTextEdit()
         self.txt_train_log.setReadOnly(True)
         layout.addWidget(self.txt_train_log, stretch=1)
 
-        # Step advance row
         advance_row = QHBoxLayout()
         advance_row.addStretch()
         self.btn_next_step_4 = QPushButton("View Results in Step 5 ➔")
@@ -992,7 +1126,6 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(box_quick)
 
-        # Dataset Preview
         box_yaml = QGroupBox("Active data.yaml Configuration Preview")
         yaml_layout = QVBoxLayout(box_yaml)
         self.txt_yaml_preview = QPlainTextEdit()
@@ -1023,7 +1156,7 @@ class MainWindow(QMainWindow):
 
         layout.addStretch()
 
-        self.lbl_step_indicator = QLabel("Step 1 of 5: CVAT Download")
+        self.lbl_step_indicator = QLabel("Step 1 of 5: Task Explorer")
         self.lbl_step_indicator.setStyleSheet("font-weight: 700; color: #38bdf8; font-size: 13px;")
         layout.addWidget(self.lbl_step_indicator)
 
@@ -1053,6 +1186,88 @@ class MainWindow(QMainWindow):
         layout.addWidget(lbl_workspace)
 
         return bar
+
+    # =================================================================
+    # Login & Authentication Slots
+    # =================================================================
+
+    def _on_do_login(self):
+        url = self.txt_login_url.text().strip()
+        user = self.txt_login_user.text().strip()
+        pwd = self.txt_login_pass.text()
+
+        if not url:
+            self._show_login_alert("Please provide a valid CVAT URL.")
+            return
+
+        self.lbl_login_alert.hide()
+        self.btn_do_login.setEnabled(False)
+        self.lbl_login_status.setText("Connecting to CVAT server...")
+        self.login_mascot.set_state(DancingSvgMascot.STATE_DOWNLOADING)
+
+        self.active_worker = CvatAuthWorker(self.cvat_client, url, user, pwd)
+        self.active_worker.finished_signal.connect(self._on_auth_success)
+        self.active_worker.error_signal.connect(self._on_auth_error)
+        self.active_worker.start()
+
+    def _on_auth_success(self, login_info: dict, projects: list[dict], tasks: list[dict]):
+        self.btn_do_login.setEnabled(True)
+        self.login_mascot.set_state(DancingSvgMascot.STATE_SUCCESS)
+        self.lbl_login_status.setText("Authentication successful!")
+
+        # Update Studio Header
+        username = login_info.get("username") or "User"
+        server_url = login_info.get("server_url")
+        self.lbl_user_badge.setText(f"👤 Logged in as: {username} | Host: {server_url}")
+        self.lbl_server_info.setText(f"Connected Server: {server_url} (v{login_info.get('server_version')})")
+
+        # Populate projects dropdown
+        self.cmb_proj_filter.blockSignals(True)
+        self.cmb_proj_filter.clear()
+        self.cmb_proj_filter.addItem("All Projects", None)
+        for p in projects:
+            self.cmb_proj_filter.addItem(f"[{p['id']}] {p['name']}", p['id'])
+        self.cmb_proj_filter.blockSignals(False)
+
+        self.all_tasks_data = tasks
+        self._populate_tasks_table(self.all_tasks_data)
+        self.lbl_cvat_status.setText(f"Loaded {len(tasks)} tasks across {len(projects)} projects.")
+
+        # Transition to Studio Wizard View
+        self.root_stack.setCurrentIndex(1)
+        self._go_to_step(0)
+
+    def _on_auth_error(self, err_msg: str):
+        self.btn_do_login.setEnabled(True)
+        self.login_mascot.set_state(DancingSvgMascot.STATE_IDLE)
+        self.lbl_login_status.setText("")
+        self._show_login_alert(f"Authentication Failed: {err_msg}")
+
+    def _show_login_alert(self, message: str):
+        self.lbl_login_alert.setText(f"⚠️ {message}")
+        self.lbl_login_alert.show()
+
+    def _on_skip_login(self):
+        """Allows user to bypass CVAT login to work directly on local datasets/models."""
+        self.lbl_user_badge.setText("👤 Mode: Local Workspaces (Offline)")
+        self.lbl_server_info.setText("CVAT Status: Not connected (Local Offline Mode)")
+        self.root_stack.setCurrentIndex(1)
+        # Go directly to Step 2 (Merge & Convert) or Step 1
+        self._go_to_step(1)
+
+    def _on_logout(self):
+        ret = QMessageBox.question(
+            self, "Confirm Logout", "Are you sure you want to log out of CVAT and return to the Sign-In screen?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes
+        )
+        if ret == QMessageBox.Yes:
+            self.cvat_client.logout()
+            self.all_tasks_data.clear()
+            self.tbl_tasks.setRowCount(0)
+            self.txt_login_pass.clear()
+            self.lbl_login_status.setText("")
+            self.lbl_login_alert.hide()
+            self.root_stack.setCurrentIndex(0)
 
     # =================================================================
     # Step Wizard Controller
@@ -1130,40 +1345,21 @@ class MainWindow(QMainWindow):
     # -----------------------------------------------------------------
     # Step 1: CVAT Slots
     # -----------------------------------------------------------------
-    def _on_cvat_login(self):
-        url = self.txt_cvat_url.text().strip()
-        user = self.txt_cvat_user.text().strip()
-        pwd = self.txt_cvat_pass.text()
-
-        if not url:
-            QMessageBox.warning(self, "Input Error", "Please provide a valid CVAT URL.")
+    def _fetch_cvat_tasks(self):
+        if not self.cvat_client.is_logged_in():
+            QMessageBox.information(self, "Not Logged In", "Please sign in to CVAT first.")
+            self.root_stack.setCurrentIndex(0)
             return
 
-        self.btn_cvat_login.setEnabled(False)
-        self.lbl_cvat_status.setText("Connecting and logging in to CVAT...")
-        self.mascot.set_state(DancingSvgMascot.STATE_DOWNLOADING)
-
-        try:
-            res = self.cvat_client.login(url, user, pwd)
-            self.lbl_cvat_status.setText(f"Connected! Server Version: {res['server_version']}")
-            self._fetch_cvat_tasks()
-        except Exception as e:
-            self.btn_cvat_login.setEnabled(True)
-            self.mascot.set_state(DancingSvgMascot.STATE_IDLE)
-            self.lbl_cvat_status.setText(f"Error: {e}")
-            QMessageBox.critical(self, "CVAT Login Error", str(e))
-
-    def _fetch_cvat_tasks(self):
+        self.lbl_cvat_status.setText("Fetching updated tasks from CVAT...")
         self.active_worker = CvatFetchWorker(self.cvat_client)
         self.active_worker.finished_signal.connect(self._on_tasks_fetched)
         self.active_worker.error_signal.connect(self._on_tasks_fetch_error)
         self.active_worker.start()
 
     def _on_tasks_fetched(self, projects: list[dict], tasks: list[dict]):
-        self.btn_cvat_login.setEnabled(True)
         self.mascot.set_state(DancingSvgMascot.STATE_IDLE)
 
-        # Populate projects dropdown
         self.cmb_proj_filter.blockSignals(True)
         self.cmb_proj_filter.clear()
         self.cmb_proj_filter.addItem("All Projects", None)
@@ -1176,7 +1372,6 @@ class MainWindow(QMainWindow):
         self.lbl_cvat_status.setText(f"Loaded {len(tasks)} tasks across {len(projects)} projects.")
 
     def _on_tasks_fetch_error(self, err_msg: str):
-        self.btn_cvat_login.setEnabled(True)
         self.mascot.set_state(DancingSvgMascot.STATE_IDLE)
         self.lbl_cvat_status.setText(f"Fetch error: {err_msg}")
         QMessageBox.warning(self, "Fetch Tasks Error", err_msg)
@@ -1280,7 +1475,6 @@ class MainWindow(QMainWindow):
         self.lbl_global_status.setText("🟢 Download complete! Images flattened from /images/default.")
         self.step_completed[0] = True
 
-        # Auto populate Step 2 source
         self.txt_merge_src.setText(str(self.downloads_dir))
 
         ret = QMessageBox.question(
@@ -1339,7 +1533,6 @@ class MainWindow(QMainWindow):
         self.lbl_merge_stats.setText(stats_text)
         self.lbl_global_status.setText("🟢 Datasets merged successfully.")
 
-        # Update Step 3 paths
         self.txt_split_img_src.setText(str(res["images_dir"]))
         self.txt_split_lbl_src.setText(str(self.merged_dir / "labels"))
 
@@ -1394,7 +1587,6 @@ class MainWindow(QMainWindow):
         self.lbl_conv_stats.setText(stats_text)
         self.lbl_global_status.setText("🟢 Conversion to YOLO format complete.")
 
-        # Update Step 3 labels path
         self.txt_split_lbl_src.setText(str(res["output_dir"]))
 
         ret = QMessageBox.question(
@@ -1471,7 +1663,6 @@ class MainWindow(QMainWindow):
         self.lbl_split_stats.setText(stats_text)
         self.lbl_global_status.setText("🟢 Split complete. All images included.")
 
-        # Update Step 4 data.yaml path
         self.txt_data_yaml.setText(str(res["data_yaml_path"]))
         self._refresh_yaml_preview()
 
@@ -1581,7 +1772,7 @@ class MainWindow(QMainWindow):
             "epochs": self.spin_epochs.value(),
             "batch": batch_val if batch_val > 0 else -1,
             "imgsz": self.spin_imgsz.value(),
-            "patience": self.spin_patience.value(),  # Early stop
+            "patience": self.spin_patience.value(),
             "lr0": self.spin_lr0.value(),
             "optimizer": self.cmb_optimizer.currentText(),
             "device": self.txt_device.text().strip(),

@@ -6,8 +6,14 @@
 
 ## 🌟 ฟีเจอร์เด่น (Key Features)
 
-1. **CVAT Connect & Smart Task Downloader**:
-   - ล็อกอินเข้า CVAT REST API (`http://1.10.131.222:8080`)
+1. **หน้าจอ Login แยกเป็นสัดส่วน (Dedicated Authentication Screen)**:
+   - เปิดโปรแกรมมาจะพบกับหน้า **Sign-In เข้าสู่ระบบ CVAT** สวยงามทันสมัย (Cyber Glassmorphism Card)
+   - มี **Dancing SVG Mascot ("Byte")** ต้อนรับ ดิ้นโบกมือและกระพริบตาเรืองแสง
+   - กรอก **CVAT Server URL**, **Username** และ **Password** พร้อมระบบตรวจสอบสถานะการเชื่อมต่อ
+   - มีปุ่ม **"📁 Work with Local Datasets (Skip Login / Offline Mode)"** สำหรับกรณีที่มี Dataset อยู่แล้วและต้องการข้ามไปใช้งาน Merge/Convert/Split/Train ได้ทันทีโดยไม่ต้องล็อกอิน
+   - ในหน้า Studio มีปุ่ม **"🚪 Logout"** ที่แถบ Header เพื่อสลับผู้ใช้หรือเปลี่ยน Server ได้ตลอดเวลา
+
+2. **CVAT Connect & Smart Task Downloader**:
    - ดึงรายการ Project และ Tasks พร้อมแสดงข้อมูล Stage, State, Status, จำนวนภาพ
    - ตัวกรองสถานะ: Filter ตาม Project, Stage (เช่น `acceptance`, `annotation`, `validation`), State (เช่น `completed`, `in progress`, `new`, `rejected`), Status, และค้นหาตามชื่อ Task หรือเลือก Checkbox ทีละอันได้อิสระ
    - ดาวน์โหลดในฟอร์แมต **COCO 1.0** พร้อมภาพ

@@ -1,6 +1,6 @@
 """
 Theme and styling definitions for the CVAT-to-YOLO PyQt5 GUI application.
-Modern Dark Cyberpunk / Slate styling with vibrant neon accents and step-by-step wizard components.
+Modern Dark Cyberpunk / Slate styling with vibrant neon accents, dedicated Login Page, and step-by-step wizard components.
 """
 
 DARK_STYLESHEET = """
@@ -12,7 +12,110 @@ QMainWindow, QWidget#centralWidget {
     font-size: 13px;
 }
 
-/* Card Containers */
+/* ========================================================= */
+/* Dedicated Login Page Styles                               */
+/* ========================================================= */
+QFrame.LoginCard {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #111827, stop:0.5 #1e1b4b, stop:1 #0f172a);
+    border: 2px solid #3b82f6;
+    border-radius: 18px;
+    padding: 24px;
+}
+
+QLabel#loginTitle {
+    font-size: 24px;
+    font-weight: 800;
+    color: #f8fafc;
+}
+
+QLabel#loginSubtitle {
+    font-size: 13px;
+    color: #94a3b8;
+}
+
+QLineEdit.LoginInput {
+    background-color: #090e1a;
+    color: #f8fafc;
+    border: 1px solid #334155;
+    border-radius: 8px;
+    padding: 10px 14px;
+    font-size: 13.5px;
+}
+
+QLineEdit.LoginInput:focus {
+    border: 2px solid #38bdf8;
+    background-color: #0d1527;
+}
+
+QPushButton.LoginButton {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #4f46e5, stop:0.5 #2563eb, stop:1 #06b6d4);
+    color: #ffffff;
+    border: none;
+    border-radius: 10px;
+    padding: 12px 24px;
+    font-weight: 800;
+    font-size: 14px;
+}
+
+QPushButton.LoginButton:hover {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #6366f1, stop:0.5 #3b82f6, stop:1 #22d3ee);
+}
+
+QPushButton.LoginButton:pressed {
+    background: #1e1b4b;
+}
+
+QPushButton.LogoutButton {
+    background-color: #1e293b;
+    color: #f43f5e;
+    border: 1px solid #475569;
+    border-radius: 6px;
+    padding: 5px 12px;
+    font-weight: 600;
+    font-size: 11px;
+}
+
+QPushButton.LogoutButton:hover {
+    background-color: #881337;
+    color: #ffffff;
+    border-color: #f43f5e;
+}
+
+QPushButton.SkipLoginButton {
+    background-color: transparent;
+    color: #64748b;
+    border: none;
+    font-size: 12px;
+    text-decoration: underline;
+}
+
+QPushButton.SkipLoginButton:hover {
+    color: #38bdf8;
+}
+
+QLabel.AlertError {
+    background-color: #450a0a;
+    color: #fca5a5;
+    border: 1px solid #ef4444;
+    border-radius: 8px;
+    padding: 8px 12px;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+QLabel.AlertSuccess {
+    background-color: #064e3b;
+    color: #6ee7b7;
+    border: 1px solid #10b981;
+    border-radius: 8px;
+    padding: 8px 12px;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+/* ========================================================= */
+/* Card Containers & Header                                  */
+/* ========================================================= */
 QFrame.CardFrame, QWidget.CardFrame {
     background-color: #151f32;
     border: 1px solid #1e293b;
@@ -93,7 +196,6 @@ QPushButton.StepButton:hover {
     border-color: #334155;
 }
 
-/* Active Step: Glowing Cyan/Indigo highlight */
 QPushButton.StepButtonActive {
     background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #1e1b4b, stop:1 #0f2b48);
     color: #38bdf8;
@@ -105,7 +207,6 @@ QPushButton.StepButtonActive {
     font-weight: 700;
 }
 
-/* Completed Step: Emerald Accent */
 QPushButton.StepButtonCompleted {
     background-color: #0f2425;
     color: #34d399;
@@ -190,7 +291,7 @@ QPushButton:pressed {
     background-color: #0f172a;
 }
 
-/* Primary Action Button (Electric Cyan / Indigo) */
+/* Primary Action Button */
 QPushButton.PrimaryButton {
     background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #4f46e5, stop:1 #06b6d4);
     color: #ffffff;
@@ -215,7 +316,7 @@ QPushButton.PrimaryButton:disabled {
     border: 1px solid #334155;
 }
 
-/* Success Action Button (Neon Emerald) */
+/* Success Action Button */
 QPushButton.SuccessButton {
     background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #059669, stop:1 #10b981);
     color: #ffffff;
@@ -229,7 +330,7 @@ QPushButton.SuccessButton:hover {
     background: #10b981;
 }
 
-/* Danger / Stop Button (Rose Red) */
+/* Danger / Stop Button */
 QPushButton.DangerButton {
     background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #b91c1c, stop:1 #f43f5e);
     color: #ffffff;
@@ -243,7 +344,7 @@ QPushButton.DangerButton:hover {
     background: #f43f5e;
 }
 
-/* Next / Step Flow Button */
+/* Step Flow Button */
 QPushButton.StepNavButton {
     background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #2563eb, stop:1 #4f46e5);
     color: #ffffff;
