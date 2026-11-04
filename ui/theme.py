@@ -1,6 +1,6 @@
 """
 Theme and styling definitions for the CVAT-to-YOLO PyQt5 GUI application.
-Modern Dark Cyberpunk / Slate styling with vibrant neon accents.
+Modern Dark Cyberpunk / Slate styling with vibrant neon accents and step-by-step wizard components.
 """
 
 DARK_STYLESHEET = """
@@ -31,7 +31,7 @@ QLabel {
 }
 
 QLabel#titleLabel {
-    font-size: 22px;
+    font-size: 20px;
     font-weight: 800;
     color: #f8fafc;
 }
@@ -66,38 +66,77 @@ QLabel.BadgeInfo {
     font-weight: 600;
 }
 
-/* Modern Tab Widget */
-QTabWidget::pane {
+/* ========================================================= */
+/* Step-by-Step Stepper Navigation Bar                       */
+/* ========================================================= */
+QFrame.StepperContainer {
+    background-color: #0f172a;
+    border: 1px solid #1e293b;
+    border-radius: 12px;
+    padding: 4px;
+}
+
+QPushButton.StepButton {
+    background-color: #131d31;
+    color: #94a3b8;
     border: 1px solid #1e293b;
     border-radius: 10px;
-    background-color: #0f172a;
-    top: -1px;
-}
-
-QTabBar::tab {
-    background-color: #172033;
-    color: #94a3b8;
-    padding: 10px 20px;
-    margin-right: 4px;
-    border-top-left-radius: 8px;
-    border-top-right-radius: 8px;
-    border: 1px solid #1e293b;
-    border-bottom: none;
+    padding: 8px 12px;
+    text-align: left;
+    font-size: 12px;
     font-weight: 600;
-    font-size: 13px;
 }
 
-QTabBar::tab:selected {
-    background-color: #0f172a;
+QPushButton.StepButton:hover {
+    background-color: #1c273e;
+    color: #f1f5f9;
+    border-color: #334155;
+}
+
+/* Active Step: Glowing Cyan/Indigo highlight */
+QPushButton.StepButtonActive {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #1e1b4b, stop:1 #0f2b48);
     color: #38bdf8;
-    border-top: 3px solid #0284c7;
-    border-left: 1px solid #334155;
-    border-right: 1px solid #334155;
+    border: 2px solid #0284c7;
+    border-radius: 10px;
+    padding: 8px 12px;
+    text-align: left;
+    font-size: 12px;
+    font-weight: 700;
 }
 
-QTabBar::tab:hover:!selected {
-    background-color: #1e293b;
-    color: #e2e8f0;
+/* Completed Step: Emerald Accent */
+QPushButton.StepButtonCompleted {
+    background-color: #0f2425;
+    color: #34d399;
+    border: 1px solid #059669;
+    border-radius: 10px;
+    padding: 8px 12px;
+    text-align: left;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+/* Step Wizard Guidance Card */
+QFrame.GuideBox {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #0f172a, stop:1 #1e1b4b);
+    border: 1px solid #3b82f6;
+    border-radius: 10px;
+    padding: 6px 14px;
+}
+
+QLabel#guideLabel {
+    color: #e0e7ff;
+    font-size: 12.5px;
+    font-weight: 500;
+}
+
+/* Bottom Stepper Footer */
+QFrame.StepperFooter {
+    background-color: #131d31;
+    border: 1px solid #1e293b;
+    border-radius: 10px;
+    padding: 6px 12px;
 }
 
 /* Form Controls: LineEdit, ComboBox, SpinBox */
@@ -157,7 +196,7 @@ QPushButton.PrimaryButton {
     color: #ffffff;
     border: none;
     border-radius: 8px;
-    padding: 10px 22px;
+    padding: 9px 20px;
     font-weight: 700;
     font-size: 13px;
 }
@@ -182,7 +221,7 @@ QPushButton.SuccessButton {
     color: #ffffff;
     border: none;
     border-radius: 8px;
-    padding: 10px 20px;
+    padding: 9px 20px;
     font-weight: 700;
 }
 
@@ -196,12 +235,33 @@ QPushButton.DangerButton {
     color: #ffffff;
     border: none;
     border-radius: 8px;
-    padding: 10px 20px;
+    padding: 9px 20px;
     font-weight: 700;
 }
 
 QPushButton.DangerButton:hover {
     background: #f43f5e;
+}
+
+/* Next / Step Flow Button */
+QPushButton.StepNavButton {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #2563eb, stop:1 #4f46e5);
+    color: #ffffff;
+    border: 1px solid #3b82f6;
+    border-radius: 8px;
+    padding: 8px 18px;
+    font-weight: 700;
+    font-size: 12.5px;
+}
+
+QPushButton.StepNavButton:hover {
+    background: #3b82f6;
+}
+
+QPushButton.StepNavButton:disabled {
+    background: #1e293b;
+    color: #475569;
+    border-color: #334155;
 }
 
 /* Tables & Tree Views */
@@ -312,6 +372,23 @@ QSlider::handle:horizontal {
 QSlider::handle:horizontal:hover {
     background: #ffffff;
     border-color: #38bdf8;
+}
+
+/* GroupBox */
+QGroupBox {
+    border: 1px solid #1e293b;
+    border-radius: 10px;
+    margin-top: 10px;
+    padding-top: 10px;
+    font-weight: 700;
+    color: #38bdf8;
+}
+
+QGroupBox::title {
+    subcontrol-origin: margin;
+    left: 14px;
+    padding: 0 6px;
+    background-color: #0b1120;
 }
 
 /* Scrollbars */
