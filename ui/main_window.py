@@ -22,7 +22,7 @@ from PyQt5.QtWidgets import (
     QStackedWidget, QLabel, QLineEdit, QPushButton, QComboBox, QSpinBox,
     QDoubleSpinBox, QSlider, QCheckBox, QRadioButton, QButtonGroup,
     QTableWidget, QTableWidgetItem, QHeaderView, QFileDialog, QMessageBox,
-    QProgressBar, QPlainTextEdit, QFrame, QGroupBox
+    QProgressBar, QPlainTextEdit, QFrame, QGroupBox, QScrollArea
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 
@@ -278,8 +278,8 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle(".☘︎ ݁˖ CVAT to YOLO Studio • Cozy AI Pipeline")
-        self.resize(1260, 880)
-        self.setMinimumSize(1020, 740)
+        self.resize(1260, 860)
+        self.setMinimumSize(940, 620)
 
         # Working Directories
         self.app_dir = Path("C:/Articulus/cvat").resolve()
@@ -306,6 +306,16 @@ class MainWindow(QMainWindow):
         # Start on dedicated Login Page
         self.root_stack.setCurrentIndex(0)
 
+    def _wrap_page_scroll(self, widget: QWidget) -> QScrollArea:
+        """Wraps any page inside a responsive QScrollArea so text never gets clipped vertically."""
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll.setWidget(widget)
+        return scroll
+
     def _init_ui(self):
         central_widget = QWidget(self)
         central_widget.setObjectName("centralWidget")
@@ -320,7 +330,7 @@ class MainWindow(QMainWindow):
         self.view_login = self._build_login_view()
         self.view_studio = self._build_studio_view()
 
-        self.root_stack.addWidget(self.view_login)
+        self.root_stack.addWidget(self._wrap_page_scroll(self.view_login))
         self.root_stack.addWidget(self.view_studio)
 
         root_layout.addWidget(self.root_stack)
@@ -432,7 +442,7 @@ class MainWindow(QMainWindow):
 
         # Version stamp
         lbl_foot = QLabel("CVAT to YOLO Studio v2.0 • Enterprise Edition")
-        lbl_foot.setStyleSheet("color: #475569; font-size: 11px;")
+        lbl_foot.setStyleSheet("color: #8c7b6f; font-size: 11px;")
         lbl_foot.setAlignment(Qt.AlignCenter)
         layout.addWidget(lbl_foot)
 
@@ -457,13 +467,13 @@ class MainWindow(QMainWindow):
         # 3. Dynamic Guide Box
         layout.addWidget(self._build_guide_box())
 
-        # 4. Multi-Page Container (QStackedWidget)
+        # 4. Multi-Page Container (QStackedWidget with Responsive QScrollArea)
         self.pages = QStackedWidget()
-        self.pages.addWidget(self._build_page_cvat())
-        self.pages.addWidget(self._build_page_merge_convert())
-        self.pages.addWidget(self._build_page_split())
-        self.pages.addWidget(self._build_page_train())
-        self.pages.addWidget(self._build_page_explorer())
+        self.pages.addWidget(self._wrap_page_scroll(self._build_page_cvat()))
+        self.pages.addWidget(self._wrap_page_scroll(self._build_page_merge_convert()))
+        self.pages.addWidget(self._wrap_page_scroll(self._build_page_split()))
+        self.pages.addWidget(self._wrap_page_scroll(self._build_page_train()))
+        self.pages.addWidget(self._wrap_page_scroll(self._build_page_explorer()))
         layout.addWidget(self.pages, stretch=1)
 
         # 5. Bottom Stepper Footer Navigation (< Previous | Step X of 5 | Next >)
@@ -508,7 +518,7 @@ class MainWindow(QMainWindow):
         # Profile & Status Row
         profile_row = QHBoxLayout()
         self.lbl_user_badge = QLabel("👤 Connected: Anonymous")
-        self.lbl_user_badge.setStyleSheet("color: #38bdf8; font-weight: 700; font-size: 11.5px;")
+        self.lbl_user_badge.setStyleSheet("color: #355737; font-weight: 700; font-size: 12px; min-height: 20px;")
         profile_row.addWidget(self.lbl_user_badge)
 
         btn_logout = QPushButton("🚪 Logout")
@@ -607,7 +617,7 @@ class MainWindow(QMainWindow):
         conn_layout.setContentsMargins(14, 8, 14, 8)
 
         self.lbl_server_info = QLabel("Connected Server: http://1.10.131.222:8080")
-        self.lbl_server_info.setStyleSheet("color: #38bdf8; font-weight: 600;")
+        self.lbl_server_info.setStyleSheet("color: #355737; font-weight: 700; min-height: 22px;")
         conn_layout.addWidget(self.lbl_server_info, stretch=1)
 
         btn_refresh_tasks = QPushButton("🔄 Refresh Tasks from Server")
@@ -665,6 +675,9 @@ class MainWindow(QMainWindow):
         ])
         self.tbl_tasks.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
         self.tbl_tasks.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        self.tbl_tasks.verticalHeader().setDefaultSectionSize(36)
+        self.tbl_tasks.verticalHeader().setVisible(False)
+        self.tbl_tasks.setMinimumHeight(240)
         self.tbl_tasks.setSelectionBehavior(QTableWidget.SelectRows)
         layout.addWidget(self.tbl_tasks, stretch=1)
 
@@ -1037,7 +1050,7 @@ class MainWindow(QMainWindow):
         naming_layout.addWidget(btn_runs_base, 0, 4)
 
         self.lbl_run_preview = QLabel("Output Preview: runs/detect/my_yolo_model_v1/weights/my_yolo_model.pt")
-        self.lbl_run_preview.setStyleSheet("color: #38bdf8; font-weight: 600;")
+        self.lbl_run_preview.setStyleSheet("color: #355737; font-weight: 700; min-height: 36px; line-height: 1.4;")
         naming_layout.addWidget(self.lbl_run_preview, 1, 0, 1, 5)
 
         layout.addWidget(box_naming)
@@ -1070,7 +1083,7 @@ class MainWindow(QMainWindow):
         self.lbl_metric_early_stop = QLabel("Early Stopping: Active")
 
         for m_lbl in [self.lbl_metric_epoch, self.lbl_metric_loss, self.lbl_metric_fitness, self.lbl_metric_early_stop]:
-            m_lbl.setStyleSheet("font-weight: 700; font-size: 13px; color: #f8fafc;")
+            m_lbl.setStyleSheet("font-weight: 700; font-size: 13px; color: #2e221b; min-height: 24px; padding: 2px 4px;")
             metrics_layout.addWidget(m_lbl)
             metrics_layout.addStretch()
 
@@ -1082,6 +1095,7 @@ class MainWindow(QMainWindow):
 
         self.txt_train_log = QPlainTextEdit()
         self.txt_train_log.setReadOnly(True)
+        self.txt_train_log.setMinimumHeight(160)
         layout.addWidget(self.txt_train_log, stretch=1)
 
         advance_row = QHBoxLayout()
@@ -1157,7 +1171,7 @@ class MainWindow(QMainWindow):
         layout.addStretch()
 
         self.lbl_step_indicator = QLabel("Step 1 of 5: Task Explorer")
-        self.lbl_step_indicator.setStyleSheet("font-weight: 700; color: #38bdf8; font-size: 13px;")
+        self.lbl_step_indicator.setStyleSheet("font-weight: 700; color: #355737; font-size: 13px; min-height: 22px;")
         layout.addWidget(self.lbl_step_indicator)
 
         layout.addStretch()
@@ -1182,7 +1196,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.lbl_global_status, stretch=1)
 
         lbl_workspace = QLabel(f"Workspace: {self.app_dir}")
-        lbl_workspace.setStyleSheet("color: #64748b; font-size: 11px;")
+        lbl_workspace.setStyleSheet("color: #786659; font-size: 11px;")
         layout.addWidget(lbl_workspace)
 
         return bar

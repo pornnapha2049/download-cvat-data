@@ -1,7 +1,7 @@
 """
 Theme and styling definitions for the CVAT-to-YOLO PyQt5 GUI application.
 Inspired by Aesthetic Printable Stickers, Cozy Stationery, and Journal Layouts (.☘︎ ݁˖).
-Warm Cream, Matcha Sage, Honey Yellow, and Soft Terracotta Palette.
+Optimized for all screen resolutions and High DPI displays with generous vertical breathing room.
 """
 
 AESTHETIC_STYLESHEET = """
@@ -9,8 +9,20 @@ AESTHETIC_STYLESHEET = """
 QMainWindow, QWidget#centralWidget {
     background-color: #fbf8f2;
     color: #332822;
-    font-family: 'Segoe UI', 'Nunito', 'Comfortaa', -apple-system, sans-serif;
+    font-family: 'Segoe UI', 'Nunito', 'Leelawadee UI', 'Tahoma', -apple-system, sans-serif;
     font-size: 13px;
+}
+
+/* ========================================================= */
+/* Scroll Areas                                              */
+/* ========================================================= */
+QScrollArea {
+    background-color: transparent;
+    border: none;
+}
+
+QScrollArea > QWidget > QWidget {
+    background-color: transparent;
 }
 
 /* ========================================================= */
@@ -24,14 +36,16 @@ QFrame.LoginCard {
 }
 
 QLabel#loginTitle {
-    font-size: 23px;
+    font-size: 24px;
     font-weight: 800;
     color: #2e221b;
+    min-height: 32px;
 }
 
 QLabel#loginSubtitle {
-    font-size: 12.5px;
+    font-size: 13px;
     color: #736154;
+    min-height: 20px;
 }
 
 QLineEdit.LoginInput {
@@ -39,8 +53,9 @@ QLineEdit.LoginInput {
     color: #2e221b;
     border: 1.5px solid #dcd0bf;
     border-radius: 10px;
-    padding: 10px 14px;
-    font-size: 13px;
+    padding: 8px 14px;
+    font-size: 13.5px;
+    min-height: 30px;
 }
 
 QLineEdit.LoginInput:focus {
@@ -54,9 +69,10 @@ QPushButton.LoginButton {
     color: #ffffff;
     border: none;
     border-radius: 12px;
-    padding: 12px 24px;
+    padding: 10px 24px;
     font-weight: 800;
-    font-size: 13.5px;
+    font-size: 14px;
+    min-height: 34px;
 }
 
 QPushButton.LoginButton:hover {
@@ -74,7 +90,8 @@ QPushButton.LogoutButton {
     border-radius: 8px;
     padding: 5px 12px;
     font-weight: 700;
-    font-size: 11px;
+    font-size: 11.5px;
+    min-height: 22px;
 }
 
 QPushButton.LogoutButton:hover {
@@ -86,8 +103,9 @@ QPushButton.SkipLoginButton {
     background-color: transparent;
     color: #7a6a5e;
     border: none;
-    font-size: 12px;
+    font-size: 12.5px;
     text-decoration: underline;
+    min-height: 24px;
 }
 
 QPushButton.SkipLoginButton:hover {
@@ -102,6 +120,7 @@ QLabel.AlertError {
     padding: 8px 14px;
     font-size: 12px;
     font-weight: 600;
+    min-height: 22px;
 }
 
 QLabel.AlertSuccess {
@@ -112,6 +131,7 @@ QLabel.AlertSuccess {
     padding: 8px 14px;
     font-size: 12px;
     font-weight: 600;
+    min-height: 22px;
 }
 
 /* ========================================================= */
@@ -135,41 +155,46 @@ QLabel {
 }
 
 QLabel#titleLabel {
-    font-size: 20px;
+    font-size: 21px;
     font-weight: 800;
     color: #2b1f18;
+    min-height: 28px;
 }
 
 QLabel#subtitleLabel {
-    font-size: 12px;
+    font-size: 12.5px;
     color: #786659;
+    min-height: 18px;
 }
 
 QLabel.SectionHeader {
-    font-size: 14.5px;
+    font-size: 15px;
     font-weight: 700;
     color: #5e8460;
     padding-bottom: 4px;
+    min-height: 22px;
 }
 
 QLabel.BadgeSuccess {
     background-color: #eaf3ea;
     color: #3b633d;
-    padding: 3px 9px;
+    padding: 4px 10px;
     border-radius: 8px;
-    font-size: 11px;
+    font-size: 11.5px;
     font-weight: 700;
     border: 1px solid #cce2cc;
+    min-height: 18px;
 }
 
 QLabel.BadgeInfo {
     background-color: #eef4f8;
     color: #4a6c82;
-    padding: 3px 9px;
+    padding: 4px 10px;
     border-radius: 8px;
-    font-size: 11px;
+    font-size: 11.5px;
     font-weight: 700;
     border: 1px solid #d2e3ee;
+    min-height: 18px;
 }
 
 /* ========================================================= */
@@ -179,7 +204,7 @@ QFrame.StepperContainer {
     background-color: #f3ece0;
     border: 1.5px solid #e0d4c2;
     border-radius: 14px;
-    padding: 4px;
+    padding: 5px;
 }
 
 QPushButton.StepButton {
@@ -187,10 +212,11 @@ QPushButton.StepButton {
     color: #6d5b4e;
     border: 1.5px solid #e2d6c4;
     border-radius: 10px;
-    padding: 8px 12px;
+    padding: 6px 12px;
     text-align: left;
     font-size: 12px;
     font-weight: 600;
+    min-height: 48px;
 }
 
 QPushButton.StepButton:hover {
@@ -205,10 +231,11 @@ QPushButton.StepButtonActive {
     color: #355737;
     border: 2px solid #5e8460;
     border-radius: 10px;
-    padding: 8px 12px;
+    padding: 6px 12px;
     text-align: left;
     font-size: 12px;
     font-weight: 800;
+    min-height: 48px;
 }
 
 /* Completed Step: Soft Cream with Green Edge */
@@ -217,10 +244,11 @@ QPushButton.StepButtonCompleted {
     color: #4a6e4c;
     border: 1.5px solid #7ea880;
     border-radius: 10px;
-    padding: 8px 12px;
+    padding: 6px 12px;
     text-align: left;
     font-size: 12px;
     font-weight: 700;
+    min-height: 48px;
 }
 
 /* Step Wizard Guidance Card (Cozy Washi Tape Box) */
@@ -228,13 +256,15 @@ QFrame.GuideBox {
     background-color: #fefaf3;
     border: 1.5px dashed #d5c4ae;
     border-radius: 12px;
-    padding: 6px 14px;
+    padding: 8px 14px;
+    min-height: 28px;
 }
 
 QLabel#guideLabel {
     color: #4d3d32;
     font-size: 12.5px;
     font-weight: 600;
+    line-height: 1.4;
 }
 
 /* Bottom Stepper Footer */
@@ -242,7 +272,8 @@ QFrame.StepperFooter {
     background-color: #ffffff;
     border: 1.5px solid #e5dbcd;
     border-radius: 12px;
-    padding: 6px 12px;
+    padding: 6px 14px;
+    min-height: 38px;
 }
 
 /* ========================================================= */
@@ -253,9 +284,11 @@ QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox {
     color: #2e221b;
     border: 1.5px solid #ded3c2;
     border-radius: 8px;
-    padding: 7px 12px;
+    padding: 5px 12px;
+    min-height: 28px;
     selection-background-color: #5e8460;
     selection-color: #ffffff;
+    font-size: 13px;
 }
 
 QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus {
@@ -278,6 +311,7 @@ QComboBox QAbstractItemView {
     selection-color: #355737;
     outline: none;
     padding: 4px;
+    font-size: 13px;
 }
 
 /* Buttons */
@@ -286,8 +320,10 @@ QPushButton {
     color: #45372d;
     border: 1.5px solid #d8cbba;
     border-radius: 9px;
-    padding: 8px 16px;
+    padding: 6px 16px;
+    min-height: 28px;
     font-weight: 700;
+    font-size: 12.5px;
 }
 
 QPushButton:hover {
@@ -305,7 +341,8 @@ QPushButton.PrimaryButton {
     color: #ffffff;
     border: none;
     border-radius: 10px;
-    padding: 9px 20px;
+    padding: 8px 20px;
+    min-height: 32px;
     font-weight: 800;
     font-size: 13px;
 }
@@ -324,14 +361,16 @@ QPushButton.PrimaryButton:disabled {
     border: 1px solid #d8cbba;
 }
 
-/* Success Action Button (Honey Butter Yellow / Green) */
+/* Success Action Button (Honey Butter Yellow) */
 QPushButton.SuccessButton {
     background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #e09f3e, stop:1 #cc8b2b);
     color: #ffffff;
     border: none;
     border-radius: 10px;
-    padding: 9px 20px;
+    padding: 8px 20px;
+    min-height: 32px;
     font-weight: 800;
+    font-size: 13px;
 }
 
 QPushButton.SuccessButton:hover {
@@ -344,8 +383,10 @@ QPushButton.DangerButton {
     color: #ffffff;
     border: none;
     border-radius: 10px;
-    padding: 9px 20px;
+    padding: 8px 20px;
+    min-height: 32px;
     font-weight: 800;
+    font-size: 13px;
 }
 
 QPushButton.DangerButton:hover {
@@ -358,7 +399,8 @@ QPushButton.StepNavButton {
     color: #ffffff;
     border: none;
     border-radius: 9px;
-    padding: 8px 18px;
+    padding: 7px 18px;
+    min-height: 30px;
     font-weight: 800;
     font-size: 12.5px;
 }
@@ -382,12 +424,14 @@ QTableWidget, QTableView {
     border-radius: 10px;
     selection-background-color: #edf4ed;
     selection-color: #355737;
+    font-size: 12.5px;
 }
 
 QHeaderView::section {
     background-color: #f7efe2;
     color: #5c4b3f;
-    padding: 8px 10px;
+    padding: 6px 10px;
+    min-height: 28px;
     border: none;
     border-right: 1px solid #e8dcce;
     border-bottom: 2px solid #ddd0c0;
@@ -399,17 +443,17 @@ QHeaderView::section {
 QProgressBar {
     background-color: #f2e9dc;
     border: 1.5px solid #ded2c1;
-    border-radius: 8px;
+    border-radius: 9px;
     text-align: center;
     color: #382c24;
-    font-weight: 700;
-    font-size: 11px;
-    min-height: 18px;
+    font-weight: 800;
+    font-size: 11.5px;
+    min-height: 22px;
 }
 
 QProgressBar::chunk {
     background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #5e8460, stop:0.5 #e8b056, stop:1 #c85a54);
-    border-radius: 6px;
+    border-radius: 7px;
 }
 
 /* Checkboxes & Radio Buttons */
@@ -418,6 +462,7 @@ QCheckBox, QRadioButton {
     spacing: 8px;
     font-size: 13px;
     font-weight: 600;
+    min-height: 22px;
 }
 
 QCheckBox::indicator, QRadioButton::indicator {
@@ -473,10 +518,10 @@ QSlider::sub-page:horizontal {
 QSlider::handle:horizontal {
     background: #5e8460;
     border: 2px solid #ffffff;
-    width: 17px;
+    width: 18px;
     margin-top: -5px;
     margin-bottom: -5px;
-    border-radius: 8px;
+    border-radius: 9px;
 }
 
 QSlider::handle:horizontal:hover {
@@ -488,8 +533,11 @@ QSlider::handle:horizontal:hover {
 QGroupBox {
     border: 1.5px solid #ded1bf;
     border-radius: 12px;
-    margin-top: 10px;
-    padding-top: 10px;
+    margin-top: 12px;
+    padding-top: 14px;
+    padding-bottom: 10px;
+    padding-left: 10px;
+    padding-right: 10px;
     font-weight: 800;
     color: #587b5a;
 }
@@ -497,8 +545,10 @@ QGroupBox {
 QGroupBox::title {
     subcontrol-origin: margin;
     left: 14px;
-    padding: 0 6px;
-    background-color: #fbf8f2;
+    padding: 0 8px;
+    background-color: #ffffff;
+    border: 1px solid #e0d4c2;
+    border-radius: 6px;
 }
 
 /* Scrollbars */
@@ -542,4 +592,3 @@ QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
 """
 
 DARK_STYLESHEET = AESTHETIC_STYLESHEET
-
