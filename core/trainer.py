@@ -9,6 +9,7 @@ import os
 import re
 import sys
 import shutil
+import time
 import typing
 from pathlib import Path
 import torch
@@ -182,8 +183,15 @@ class YoloTrainerEngine:
             epoch = trainer.epoch + 1
             total_epochs = trainer.epochs
 
+            def _num(v, default=0.0):
+                """Ultralytics fields can be None (before 1st val) or tensors."""
+                try:
+                    return float(v.item() if hasattr(v, "item") else v)
+                except (TypeError, ValueError):
+                    return default
+
             loss = getattr(trainer, "loss", None)
-            loss_val = float(loss.item()) if loss is not None and hasattr(loss, "item") else 0.0
+            loss_val = _num(loss.sum() if loss is not None and hasattr(loss, "sum") else loss)
 
             metrics = getattr(trainer, "metrics", {}) or {}
             fitness = getattr(trainer, "fitness", 0.0)
@@ -193,13 +201,14 @@ class YoloTrainerEngine:
                 "epoch": epoch,
                 "total_epochs": total_epochs,
                 "loss": loss_val,
-                "fitness": float(fitness) if fitness else 0.0,
-                "best_fitness": float(getattr(trainer, "best_fitness", 0.0)),
+                "fitness": _num(fitness),
+                "best_fitness": _num(getattr(trainer, "best_fitness", None)),
             }
 
             for k, v in metrics.items():
-                if isinstance(v, (int, float)):
-                    summary[k] = float(v)
+                num = _num(v, None)
+                if num is not None:
+                    summary[k] = num
 
             if epoch_callback:
                 epoch_callback(epoch, total_epochs, summary)
@@ -226,6 +235,7 @@ class YoloTrainerEngine:
                          f"ImgSz={train_args.get('imgsz')}, Patience={train_args.get('patience')}, "
                          f"LR0={train_args.get('lr0')}, Device={train_args.get('device')}")
 
+        t_start = time.time()
         try:
             results = model.train(**train_args)
         finally:
@@ -253,6 +263,12 @@ class YoloTrainerEngine:
         return {
             "run_dir": target_run_dir,
             "run_name": versioned_run_name,
+            "task": task,
+            "model": str(model_resolved),
+            "data_yaml": str(data_yaml_path),
+            "hyperparams": dict(train_args),
+            "seconds": time.time() - t_start,
+            "stopped_by_user": self.stop_requested,
             "best_pt": target_custom_pt if target_custom_pt.exists() else None,
             "custom_pt": target_custom_pt if target_custom_pt.exists() else None,
             "last_pt": last_pt if last_pt.exists() else None,

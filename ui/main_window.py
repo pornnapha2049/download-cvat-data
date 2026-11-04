@@ -26,9 +26,9 @@ from PyQt5.QtWidgets import (
     QDoubleSpinBox, QSlider, QCheckBox, QRadioButton, QButtonGroup,
     QTableWidget, QTableWidgetItem, QHeaderView, QFileDialog, QMessageBox,
     QProgressBar, QPlainTextEdit, QFrame, QGroupBox, QScrollArea, QSplitter,
-    QApplication, QGraphicsDropShadowEffect
+    QApplication, QGraphicsDropShadowEffect, QCompleter
 )
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize, QSettings
 from PyQt5.QtGui import QImage, QPixmap, QColor
 from datetime import datetime
 
@@ -38,9 +38,21 @@ from core.converter import CocoToYoloConverter
 from core.splitter import DatasetSplitter
 from core.trainer import YoloTrainerEngine, auto_tune_hyperparameters, get_next_run_version
 from core.tester import YoloTestEngine, IMAGE_EXTS, VIDEO_EXTS
+from core.evaluator import (
+    dataset_stats, read_training_results, validate_on_split, evaluate_external,
+    has_separate_test_split, resolve_split_images, write_report_files,
+)
 from ui.dancing_svg import DancingSvgMascot, AnimatedWavePill, get_cat_pixmap
 from ui.theme import DARK_STYLESHEET, PALETTE
 from ui.svg_icons import get_svg_icon, get_svg_pixmap, icon_name_for
+from ui.report_dialog import ReportDialog, StatCard, pct, fmt_secs
+
+try:  # optional: secure password storage (Windows Credential Manager / macOS Keychain)
+    import keyring
+except Exception:  # pragma: no cover
+    keyring = None
+
+KEYRING_SERVICE = "CVAT to YOLO Studio"
 
 
 def bgr_to_qpixmap(bgr_array: np.ndarray) -> QPixmap:
@@ -105,7 +117,7 @@ class CvatDownloadWorker(QThread):
                 out_dir = self.client.download_and_extract_task(
                     task_id=task_id,
                     task_name=task_name,
-                    dest_folder=self.dest_folder,
+                    output_dir=self.dest_folder,
                     progress_callback=cb
                 )
                 results.append({"task": task, "dir": str(out_dir)})
@@ -175,9 +187,13 @@ class SplitWorker(QThread):
         lbl_dir: Path,
         out_dir: Path,
         ratios: tuple[float, float, float],
-        copy_mode: bool
+        copy_mode: bool,
+        class_names: list[str] | None = None,
+        coco_json: Path | None = None,
     ):
         super().__init__()
+        self.class_names = class_names
+        self.coco_json = coco_json
         self.splitter = splitter
         self.img_dir = img_dir
         self.lbl_dir = lbl_dir
@@ -190,11 +206,16 @@ class SplitWorker(QThread):
             def cb(cur, tot, desc):
                 self.progress_signal.emit(cur, tot, desc)
 
+            r_train, r_val, r_test = self.ratios
             stats = self.splitter.split_dataset(
                 images_dir=self.img_dir,
                 labels_dir=self.lbl_dir,
-                output_dir=self.out_dir,
-                ratios=self.ratios,
+                output_dataset_dir=self.out_dir,
+                coco_json_path=self.coco_json,
+                train_ratio=r_train,
+                val_ratio=r_val,
+                test_ratio=r_test,
+                class_names=self.class_names,
                 copy_files=self.copy_mode,
                 progress_callback=cb
             )
@@ -237,9 +258,38 @@ class TrainWorker(QThread):
                 log_callback=log_cb,
                 epoch_callback=epoch_cb
             )
+            res["report_data"] = self._collect_report(res, log_cb)
             self.finished_signal.emit(res)
         except Exception as e:
             self.error_signal.emit(str(e))
+
+
+    def _collect_report(self, res: dict, log) -> dict:
+        """Dataset counts + results.csv + accuracy on the test split. Never fails the training."""
+        data = {"warnings": []}
+        try:
+            data["dataset"] = dataset_stats(self.data_yaml)
+        except Exception as e:
+            data["warnings"].append(f"Could not read dataset stats: {e}")
+        try:
+            data["training"] = read_training_results(res["run_dir"])
+        except Exception as e:
+            data["warnings"].append(f"Could not read results.csv: {e}")
+        best = res.get("best_pt") or res.get("last_pt")
+        if best:
+            try:
+                if has_separate_test_split(self.data_yaml):
+                    log("🧪 Evaluating best weights on the TEST split...")
+                    data["test_metrics"] = validate_on_split(best, self.data_yaml, Path(res["run_dir"]), "test",
+                                                            imgsz=self.hyperparams.get("imgsz"), log=log)
+                else:
+                    data["warnings"].append("No separate test split in data.yaml — accuracy shown is on the validation split.")
+                log("📏 Re-checking best weights on the VAL split (per-class + confusion matrix)...")
+                data["val_metrics"] = validate_on_split(best, self.data_yaml, Path(res["run_dir"]), "val",
+                                                       imgsz=self.hyperparams.get("imgsz"), log=log)
+            except Exception as e:
+                data["warnings"].append(f"Evaluation failed: {e}")
+        return data
 
 
 class TestInferenceWorker(QThread):
@@ -248,8 +298,11 @@ class TestInferenceWorker(QThread):
     finished_signal = pyqtSignal(dict)
     error_signal = pyqtSignal(str)
 
-    def __init__(self, engine: YoloTestEngine, mode: str, model_path: Path, src_path: Path, conf: float, iou: float, save: bool, save_dir: Path):
+    def __init__(self, engine: YoloTestEngine, mode: str, model_path: Path, src_path: Path, conf: float, iou: float,
+                 save: bool, save_dir: Path, evaluate: bool = True, eval_dir: Path | None = None):
         super().__init__()
+        self.evaluate = evaluate
+        self.eval_dir = eval_dir or save_dir
         self.engine = engine
         self.mode = mode
         self.model_path = model_path
@@ -270,7 +323,7 @@ class TestInferenceWorker(QThread):
                     save=self.save,
                     save_dir=self.save_dir,
                 )
-                self.finished_signal.emit({"mode": "image", "data": res})
+                self.finished_signal.emit({"mode": "image", "data": res, "eval": self._evaluate(self.src_path)})
             elif self.mode == "folder":
                 def cb(cur, tot, desc):
                     self.progress_signal.emit(cur, tot, desc)
@@ -283,7 +336,32 @@ class TestInferenceWorker(QThread):
                     save_dir=self.save_dir,
                     progress_callback=cb,
                 )
-                self.finished_signal.emit({"mode": "folder", "data": res})
+                self.finished_signal.emit({"mode": "folder", "data": res, "eval": self._evaluate(self.src_path)})
+            elif self.mode == "split":
+                # src_path = data.yaml ; preview predictions on the test (or val) images, then measure accuracy
+                split = "test" if has_separate_test_split(self.src_path) else "val"
+                imgs = resolve_split_images(self.src_path, split)
+                if not imgs:
+                    raise FileNotFoundError(f"No images found in the '{split}' split of {self.src_path}")
+                def cb(cur, tot, desc):
+                    self.progress_signal.emit(cur, tot, f"[{split}] {desc}")
+                res = self.engine.predict_folder(
+                    model_path=self.model_path,
+                    folder_path=imgs[0].parent,
+                    conf=self.conf,
+                    iou=self.iou,
+                    save=self.save,
+                    save_dir=self.save_dir,
+                    progress_callback=cb,
+                )
+                ev = None
+                if not self.engine.stop_requested:
+                    self.progress_signal.emit(0, 0, f"Measuring accuracy on the {split} split...")
+                    try:
+                        ev = validate_on_split(self.model_path, self.src_path, self.eval_dir, split, cm_conf=self.conf)
+                    except Exception as e:
+                        ev = {"error": str(e)}
+                self.finished_signal.emit({"mode": "split", "data": res, "eval": ev})
             elif self.mode == "video":
                 def pcb(cur, tot, desc):
                     self.progress_signal.emit(cur, tot, desc)
@@ -302,6 +380,17 @@ class TestInferenceWorker(QThread):
                 self.finished_signal.emit({"mode": "video", "data": res})
         except Exception as e:
             self.error_signal.emit(str(e))
+
+
+    def _evaluate(self, source: Path):
+        """Accuracy when the image/folder has labels; None for unlabeled data."""
+        if not self.evaluate or self.engine.stop_requested:
+            return None
+        self.progress_signal.emit(0, 0, "Looking for labels to measure accuracy...")
+        try:
+            return evaluate_external(self.model_path, source, self.eval_dir, cm_conf=self.conf)
+        except Exception as e:
+            return {"error": str(e)}
 
 
 # =====================================================================
@@ -357,10 +446,15 @@ class MainWindow(QMainWindow):
         self.folder_test_results: list[dict] = []
         self.current_folder_test_idx: int = 0
         self.last_trained_weight: Path | None = None
+        self.last_class_names: list[str] | None = None
+        self.last_train_report: dict | None = None
+        self.last_eval_report: dict | None = None
+        self.settings = QSettings("Articulus", "CVAT to YOLO Studio")
 
         self._init_ui()
         self.setStyleSheet(DARK_STYLESHEET)
         self._apply_inverse_icons()
+        self._load_saved_login()
 
     # -----------------------------------------------------------------
     # Desktop sizing & styling helpers
@@ -701,6 +795,29 @@ class MainWindow(QMainWindow):
         pass_row.addWidget(self.txt_login_pass, 1)
         pass_row.addWidget(self.btn_toggle_pass)
         right_layout.addLayout(pass_row)
+
+        # Remember me (URL + username in QSettings, password in the OS credential store)
+        remember_row = QHBoxLayout()
+        remember_row.setSpacing(14)
+        self.chk_remember = QCheckBox("Remember URL && username")
+        self.chk_remember.setChecked(True)
+        self.chk_remember_pwd = QCheckBox("Remember password")
+        if keyring is None:
+            self.chk_remember_pwd.setEnabled(False)
+            self.chk_remember_pwd.setToolTip("Install 'keyring' (pip install keyring) to store the password securely.")
+        else:
+            self.chk_remember_pwd.setToolTip("Stored securely in Windows Credential Manager, not in a file.")
+        self.chk_remember.toggled.connect(lambda on: (self.chk_remember_pwd.setEnabled(on and keyring is not None),
+                                                      None if on else self.chk_remember_pwd.setChecked(False)))
+        remember_row.addWidget(self.chk_remember)
+        remember_row.addWidget(self.chk_remember_pwd)
+        remember_row.addStretch()
+        self.btn_forget_login = QPushButton("Forget saved login")
+        self.btn_forget_login.setProperty("class", "SkipLoginButton")
+        self.btn_forget_login.setCursor(Qt.PointingHandCursor)
+        self.btn_forget_login.clicked.connect(self._forget_saved_login)
+        remember_row.addWidget(self.btn_forget_login)
+        right_layout.addLayout(remember_row)
 
         self.lbl_login_status = QLabel("")
         self.lbl_login_status.setAlignment(Qt.AlignCenter)
@@ -1546,6 +1663,30 @@ class MainWindow(QMainWindow):
         exec_layout.addWidget(split_area)
         layout.addWidget(exec_card)
 
+        # Latest training result (filled in when training finishes)
+        self.train_result_card = QFrame()
+        self.train_result_card.setProperty("class", "CardFrame")
+        rc_layout = QVBoxLayout(self.train_result_card)
+        rc_layout.setContentsMargins(16, 14, 16, 14)
+        rc_layout.setSpacing(10)
+        rc_head = QHBoxLayout()
+        self.lbl_train_result_title = QLabel("Latest Training Result")
+        self.lbl_train_result_title.setProperty("class", "SectionTitle")
+        rc_head.addWidget(self.lbl_train_result_title)
+        rc_head.addStretch()
+        self.btn_train_report = QPushButton("View Full Report (graphs && confusion matrix)")
+        self.btn_train_report.setProperty("class", "PrimaryButton")
+        self.btn_train_report.setIcon(get_svg_icon("chart", 18))
+        self.btn_train_report.setIconSize(QSize(18, 18))
+        self.btn_train_report.clicked.connect(lambda: self._show_report(self.last_train_report))
+        rc_head.addWidget(self.btn_train_report)
+        rc_layout.addLayout(rc_head)
+        self.train_result_grid = QGridLayout()
+        self.train_result_grid.setSpacing(10)
+        rc_layout.addLayout(self.train_result_grid)
+        self.train_result_card.hide()
+        layout.addWidget(self.train_result_card)
+
         advance_row = QHBoxLayout()
         advance_row.addStretch()
         self.btn_page5_next = QPushButton("Next: Test Model ➔")
@@ -1592,18 +1733,28 @@ class MainWindow(QMainWindow):
         self.rb_src_image = QRadioButton("Single Image")
         self.rb_src_folder = QRadioButton("Entire Images Folder")
         self.rb_src_video = QRadioButton("Video File")
+        self.rb_src_split = QRadioButton("Test Split (data.yaml)")
+        self.rb_src_split.setToolTip("Use the test split created in Step 4 (falls back to val if there is no test split).")
         self.rb_src_image.setChecked(True)
 
         self.btn_grp_source = QButtonGroup(self)
         self.btn_grp_source.addButton(self.rb_src_image, 0)
         self.btn_grp_source.addButton(self.rb_src_folder, 1)
         self.btn_grp_source.addButton(self.rb_src_video, 2)
+        self.btn_grp_source.addButton(self.rb_src_split, 3)
         self.btn_grp_source.buttonToggled.connect(self._on_test_source_mode_changed)
 
         src_mode_box.addWidget(self.rb_src_image)
         src_mode_box.addWidget(self.rb_src_folder)
         src_mode_box.addWidget(self.rb_src_video)
+        src_mode_box.addWidget(self.rb_src_split)
         src_mode_box.addStretch()
+        self.chk_eval_labels = QCheckBox("Measure accuracy if labels exist")
+        self.chk_eval_labels.setChecked(True)
+        self.chk_eval_labels.setToolTip(
+            "Images/folders: looks for YOLO .txt labels (next to the images or in a labels/ folder) "
+            "or a COCO json (e.g. CVAT export). No labels → prediction only.")
+        src_mode_box.addWidget(self.chk_eval_labels)
         cg_layout.addLayout(src_mode_box, 1, 1, 1, 5)
 
         # 3. Source Path
@@ -1695,6 +1846,34 @@ class MainWindow(QMainWindow):
         cg_layout.addWidget(self.lbl_test_status, 7, 0, 1, 6)
 
         layout.addWidget(cfg_card)
+
+        # Accuracy result (shown when the tested data had labels)
+        self.test_eval_card = QFrame()
+        self.test_eval_card.setProperty("class", "CardFrame")
+        ec_layout = QVBoxLayout(self.test_eval_card)
+        ec_layout.setContentsMargins(16, 14, 16, 14)
+        ec_layout.setSpacing(10)
+        ec_head = QHBoxLayout()
+        self.lbl_test_eval_title = QLabel("Accuracy")
+        self.lbl_test_eval_title.setProperty("class", "SectionTitle")
+        ec_head.addWidget(self.lbl_test_eval_title)
+        ec_head.addStretch()
+        self.btn_test_report = QPushButton("View Accuracy Report (confusion matrix && curves)")
+        self.btn_test_report.setProperty("class", "PrimaryButton")
+        self.btn_test_report.setIcon(get_svg_icon("chart", 18))
+        self.btn_test_report.setIconSize(QSize(18, 18))
+        self.btn_test_report.clicked.connect(lambda: self._show_report(self.last_eval_report))
+        ec_head.addWidget(self.btn_test_report)
+        ec_layout.addLayout(ec_head)
+        self.test_eval_grid = QGridLayout()
+        self.test_eval_grid.setSpacing(10)
+        ec_layout.addLayout(self.test_eval_grid)
+        self.lbl_test_eval_note = QLabel("")
+        self.lbl_test_eval_note.setWordWrap(True)
+        self.lbl_test_eval_note.setProperty("class", "MutedText")
+        ec_layout.addWidget(self.lbl_test_eval_note)
+        self.test_eval_card.hide()
+        layout.addWidget(self.test_eval_card)
 
         # Visual Result & Detections Inspector Area
         inspect_card = QFrame()
@@ -1864,6 +2043,7 @@ class MainWindow(QMainWindow):
 
     def _on_auth_success(self, login_info: dict, projects: list[dict], tasks: list[dict]):
         self.btn_do_login.setEnabled(True)
+        self._save_login()
         self.login_mascot.set_state(DancingSvgMascot.STATE_SUCCESS)
         username = login_info.get("username") or self.txt_login_user.text().strip() or "User"
         server_url = login_info.get("server_url") or self.txt_login_url.text().strip()
@@ -1894,6 +2074,89 @@ class MainWindow(QMainWindow):
         self.lbl_login_status.setText("")
         self.lbl_login_alert.setText(f"Connection Failed: {err_msg}")
         self.lbl_login_alert.show()
+
+    # -----------------------------------------------------------------
+    # Remember me
+    # -----------------------------------------------------------------
+    def _load_saved_login(self):
+        urls = self.settings.value("login/url_history", [], type=list) or []
+        users = self.settings.value("login/user_history", [], type=list) or []
+        for edit, items in ((self.txt_login_url, urls), (self.txt_login_user, users)):
+            comp = QCompleter(items, self)
+            comp.setCaseSensitivity(Qt.CaseInsensitive)
+            comp.setFilterMode(Qt.MatchContains)
+            edit.setCompleter(comp)
+
+        remember = self.settings.value("login/remember", True, type=bool)
+        self.chk_remember.setChecked(remember)
+        self.btn_forget_login.setVisible(bool(urls or users))
+        if not remember:
+            return
+        url = self.settings.value("login/url", "", type=str)
+        user = self.settings.value("login/username", "", type=str)
+        self.txt_login_url.setText(url)
+        self.txt_login_user.setText(user)
+        remember_pwd = self.settings.value("login/remember_password", False, type=bool) and keyring is not None
+        self.chk_remember_pwd.setChecked(remember_pwd)
+        if remember_pwd and url and user:
+            try:
+                pwd = keyring.get_password(KEYRING_SERVICE, f"{user}@{url}")
+                if pwd:
+                    self.txt_login_pass.setText(pwd)
+            except Exception:
+                pass
+        (self.txt_login_pass if user else self.txt_login_user).setFocus()
+
+    def _save_login(self):
+        url = self.txt_login_url.text().strip()
+        user = self.txt_login_user.text().strip()
+        remember = self.chk_remember.isChecked()
+        self.settings.setValue("login/remember", remember)
+        if not remember:
+            self._forget_saved_login(silent=True)
+            return
+
+        def push(key, value):
+            items = [v for v in (self.settings.value(key, [], type=list) or []) if v != value]
+            self.settings.setValue(key, ([value] + items)[:8])
+
+        self.settings.setValue("login/url", url)
+        self.settings.setValue("login/username", user)
+        push("login/url_history", url)
+        if user:
+            push("login/user_history", user)
+
+        remember_pwd = self.chk_remember_pwd.isChecked() and keyring is not None
+        self.settings.setValue("login/remember_password", remember_pwd)
+        if keyring is not None and user:
+            try:
+                if remember_pwd:
+                    keyring.set_password(KEYRING_SERVICE, f"{user}@{url}", self.txt_login_pass.text())
+                else:
+                    keyring.delete_password(KEYRING_SERVICE, f"{user}@{url}")
+            except Exception:
+                pass
+        self.settings.sync()
+        self.btn_forget_login.setVisible(True)
+
+    def _forget_saved_login(self, silent: bool = False):
+        url = self.settings.value("login/url", "", type=str)
+        user = self.settings.value("login/username", "", type=str)
+        if keyring is not None and user:
+            try:
+                keyring.delete_password(KEYRING_SERVICE, f"{user}@{url}")
+            except Exception:
+                pass
+        for k in ("login/url", "login/username", "login/url_history", "login/user_history", "login/remember_password"):
+            self.settings.remove(k)
+        self.settings.sync()
+        self.btn_forget_login.setVisible(False)
+        if not silent:
+            self.txt_login_pass.clear()
+            self.chk_remember_pwd.setChecked(False)
+            for edit in (self.txt_login_url, self.txt_login_user):
+                edit.setCompleter(QCompleter([], self))
+            self.lbl_login_status.setText("Saved login removed.")
 
     def _on_skip_login(self):
         """Allows direct entry to studio for local dataset processing."""
@@ -2115,9 +2378,12 @@ class MainWindow(QMainWindow):
         self.studio_mascot.set_state(DancingSvgMascot.STATE_SUCCESS)
         self.prog_convert.setValue(100)
 
+        self.last_class_names = list(stats.get("classes") or []) or None
         summary = (
-            f"Converted: {stats.get('total_labels', 0)} label files | "
-            f"Annotations: {stats.get('total_annotations', 0)} | "
+            f"Images: {stats.get('total_images', 0)} | "
+            f"With labels: {stats.get('images_with_labels', 0)} | "
+            f"Annotations: {stats.get('total_annotations_written', 0)} | "
+            f"Classes ({stats.get('num_classes', 0)}): {', '.join(stats.get('classes', []))} | "
             f"Mode: {stats.get('mode', 'unknown')}"
         )
         self.lbl_conv_stats.setText(summary)
@@ -2155,8 +2421,11 @@ class MainWindow(QMainWindow):
         self.lbl_split_stats.setText("Partitioning dataset (100% images included)...")
         self.studio_mascot.set_state(DancingSvgMascot.STATE_DOWNLOADING)
 
+        coco_json = Path(self.txt_conv_json.text().strip())
         self.active_worker = SplitWorker(
-            self.splitter_engine, img_src, lbl_src, dst, (r_train, r_val, r_test), copy_mode=True
+            self.splitter_engine, img_src, lbl_src, dst, (r_train, r_val, r_test), copy_mode=True,
+            class_names=self.last_class_names,
+            coco_json=coco_json if coco_json.exists() else None,
         )
         self.active_worker.progress_signal.connect(lambda c, t, d: (self.prog_split.setMaximum(t), self.prog_split.setValue(c), self.lbl_split_stats.setText(d)))
         self.active_worker.finished_signal.connect(self._on_split_finished)
@@ -2311,14 +2580,172 @@ class MainWindow(QMainWindow):
             self.last_trained_weight = Path(best_pt)
             self.txt_test_model.setText(str(best_pt))
 
-        summary = (
-            f"🎉 YOLO Training Finished Successfully!\n\n"
-            f"• Output Run Folder: {run_dir}\n"
-            f"• Renamed Best Weights: {best_pt}\n"
-            f"• Last Checkpoint: {last_pt}\n\n"
-            f"The best weights have been renamed inside {run_dir / 'weights'}."
-        )
-        QMessageBox.information(self, "Training Complete", summary)
+        report = self._build_train_report(res)
+        self.last_train_report = report
+        self._fill_stat_grid(self.train_result_grid, report["cards"])
+        self.lbl_train_result_title.setText(f"Latest Training Result — {res.get('run_name', '')}")
+        self.train_result_card.show()
+        QApplication.processEvents()
+        scroll = self.pages.currentWidget()
+        if isinstance(scroll, QScrollArea):
+            scroll.ensureWidgetVisible(self.train_result_card, 0, 40)
+        self._append_train_log(f"📄 Report saved: {report.get('report_md', '-')}")
+        self._show_report(report)
+
+    # -----------------------------------------------------------------
+    # Reports (training + evaluation)
+    # -----------------------------------------------------------------
+    def _show_report(self, report: dict | None):
+        if report:
+            ReportDialog(report, self).exec_()
+
+    @staticmethod
+    def _fill_stat_grid(grid: QGridLayout, cards: list, per_row: int = 5):
+        while grid.count():
+            item = grid.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        for i, c in enumerate(cards):
+            grid.addWidget(StatCard(c[0], c[1], c[2] if len(c) > 2 else "", accent=(len(c) > 3 and c[3])),
+                           i // per_row, i % per_row)
+
+    @staticmethod
+    def _acc_row(name: str, m: dict | None) -> list | None:
+        if not m:
+            return None
+        box = m.get("box") or {}
+        return [name, m.get("images", "-"), m.get("instances", "-"), pct(box.get("precision")), pct(box.get("recall")),
+                pct(box.get("f1")), pct(box.get("map50")), pct(box.get("map50_95")), pct(m.get("accuracy"))]
+
+    @staticmethod
+    def _per_class_table(m: dict | None, ds: dict | None) -> dict | None:
+        if not m or not m.get("per_class"):
+            return None
+        pc_inst = (ds or {}).get("per_class", {})
+        has_ds = bool(pc_inst)
+        headers = ["Class"] + (["Train inst.", "Val inst.", "Test inst."] if has_ds else ["Instances"]) + \
+                  ["Precision", "Recall", "F1", "mAP50", "mAP50-95"]
+        rows = []
+        for r in m["per_class"]:
+            name = r["class"]
+            if has_ds:
+                inst = [pc_inst.get(name, {}).get(k, 0) for k in ("train", "val", "test")]
+            else:
+                inst = [m.get("per_class_instances", {}).get(name, 0)]
+            rows.append([name] + inst + [pct(r["precision"]), pct(r["recall"]), pct(r.get("f1")),
+                                         pct(r["map50"]), pct(r["map50_95"])])
+        return {"headers": headers, "rows": rows}
+
+    def _build_train_report(self, res: dict) -> dict:
+        rd = res.get("report_data") or {}
+        ds, tr = rd.get("dataset") or {}, rd.get("training") or {}
+        val, test = rd.get("val_metrics"), rd.get("test_metrics")
+        hp = res.get("hyperparams") or {}
+        main = test or val or {"box": (tr.get("best") or {}).get("box", {})}
+        mbox = main.get("box") or {}
+        main_name = "Test" if test else "Val"
+
+        sp = ds.get("splits", {})
+        split_txt = " · ".join(f"{k} {v['images']}" + (" (=val)" if v.get("same_as") else "") for k, v in sp.items())
+        planned = hp.get("epochs", "-")
+        done = tr.get("epochs_completed", 0)
+        early = ""
+        if res.get("stopped_by_user"):
+            early = " · stopped by user"
+        elif isinstance(planned, int) and done and done < planned:
+            early = f" · early stop (patience {hp.get('patience', '-')})"
+        names = ds.get("names", [])
+
+        cards = [
+            ("Images", str(ds.get("total_images", "-")), split_txt),
+            ("Labels (instances)", str(ds.get("total_instances", "-")),
+             f"{ds.get('total_labelled_images', 0)} labelled images"),
+            ("Classes", str(len(names)), ", ".join(names)[:70]),
+            ("Epochs", f"{done}/{planned}", f"best epoch {tr.get('best_epoch', '-')}{early}"),
+            ("Training time", fmt_secs(res.get("seconds")), f"{hp.get('device', '')} · batch {hp.get('batch', '-')} · img {hp.get('imgsz', '-')}"),
+            (f"{main_name} mAP50", pct(mbox.get("map50")), f"mAP50-95 {pct(mbox.get('map50_95'))}", True),
+            (f"{main_name} Precision", pct(mbox.get("precision"))),
+            (f"{main_name} Recall", pct(mbox.get("recall"))),
+            (f"{main_name} F1", pct(mbox.get("f1"))),
+            (f"{main_name} Accuracy*", pct(main.get("accuracy")), "TP / (TP+FP+FN)"),
+        ]
+
+        acc_rows = [r for r in (self._acc_row("Validation split", val), self._acc_row("Test split", test)) if r]
+        if not acc_rows and tr.get("best"):
+            b = tr["best"].get("box", {})
+            acc_rows = [["Validation (results.csv)", "-", "-", pct(b.get("precision")), pct(b.get("recall")),
+                         pct(b.get("f1")), pct(b.get("map50")), pct(b.get("map50_95")), "-"]]
+
+        hist = tr.get("history", {})
+        loss = {k.replace("/", " "): hist[k] for k in ("train/box_loss", "val/box_loss", "train/cls_loss",
+                                                       "val/cls_loss", "train/seg_loss", "val/seg_loss") if k in hist}
+        metr = {lbl: hist[k] for lbl, k in (("Precision", "metrics/precision(B)"), ("Recall", "metrics/recall(B)"),
+                                            ("mAP50", "metrics/mAP50(B)"), ("mAP50-95", "metrics/mAP50-95(B)"),
+                                            ("Mask mAP50", "metrics/mAP50(M)")) if k in hist}
+        plots = dict(tr.get("plots", {}))
+        for src in (val, test):  # evaluation plots (confusion matrix / curves) override training ones
+            if src:
+                plots.update({k: v for k, v in (src.get("plots") or {}).items() if k not in ("results", "labels")})
+
+        report = {
+            "title": f"Training Report — {res.get('run_name', '')}",
+            "subtitle": f"{Path(str(res.get('model', ''))).name} · {res.get('task', '')} · data: {res.get('data_yaml', '')}",
+            "cards": cards,
+            "accuracy_rows": acc_rows,
+            "per_class": self._per_class_table(test or val, ds),
+            "curves": {"loss": loss, "metrics": metr, "best_epoch": tr.get("best_epoch")} if hist else None,
+            "plots": plots,
+            "confusion": (test or val or {}).get("confusion"),
+            "warnings": rd.get("warnings", []),
+            "folder": str(res.get("run_dir", "")),
+            "dataset": ds, "val_metrics": val, "test_metrics": test,
+            "best_pt": str(res.get("best_pt") or ""),
+        }
+        try:
+            files = write_report_files({k: v for k, v in report.items() if k != "curves"}, Path(res["run_dir"]))
+            report["report_md"] = files["md"]
+        except Exception as e:
+            report["warnings"].append(f"Could not write report files: {e}")
+        return report
+
+    def _build_eval_report(self, ev: dict, model_path: Path) -> dict:
+        box = ev.get("box") or {}
+        warnings = []
+        if ev.get("labelled_images", 0) < ev.get("images", 0):
+            warnings.append(f"{ev['images'] - ev['labelled_images']} of {ev['images']} images have no label — "
+                            f"they are counted as background (no objects).")
+        if ev.get("unknown_classes"):
+            warnings.append("Classes in the labels that the model does not know (ignored): "
+                            + ", ".join(ev["unknown_classes"]))
+        cards = [
+            ("Images", str(ev.get("images", "-")), f"{ev.get('labelled_images', 0)} with labels"),
+            ("Labels (instances)", str(ev.get("instances", "-")), ev.get("label_source") or ev.get("source", "")),
+            ("mAP50", pct(box.get("map50")), f"mAP50-95 {pct(box.get('map50_95'))}", True),
+            ("Precision", pct(box.get("precision"))),
+            ("Recall", pct(box.get("recall"))),
+            ("F1", pct(box.get("f1"))),
+            ("Accuracy*", pct(ev.get("accuracy")), f"TP / (TP+FP+FN) @ conf {ev.get('cm_conf', 0.25):.2f}"),
+            ("Eval time", fmt_secs(ev.get("seconds"))),
+        ]
+        name = "Test split" if ev.get("split") == "test" else ("Val split" if ev.get("split") == "val" else "External data")
+        report = {
+            "title": f"Accuracy Report — {name}",
+            "subtitle": f"{model_path.name} · {ev.get('source', '')}",
+            "cards": cards,
+            "accuracy_rows": [self._acc_row(name, ev)],
+            "per_class": self._per_class_table(ev, None),
+            "plots": ev.get("plots", {}),
+            "confusion": ev.get("confusion"),
+            "warnings": warnings,
+            "folder": ev.get("save_dir", ""),
+            "eval": ev,
+        }
+        try:
+            files = write_report_files(report, Path(ev.get("save_dir") or self.test_results_dir))
+            report["report_md"] = files["md"]
+        except Exception:
+            pass
+        return report
 
     def _on_train_error(self, err_msg: str):
         self.btn_start_train.setEnabled(True)
@@ -2356,6 +2783,13 @@ class MainWindow(QMainWindow):
         elif idx == 2:
             self.lbl_test_src_path.setText("Video File Path:")
             self.txt_test_source.setPlaceholderText("Select video to evaluate (.mp4, .avi, ...)")
+        elif idx == 3:
+            self.lbl_test_src_path.setText("data.yaml Path:")
+            self.txt_test_source.setPlaceholderText("data.yaml created in Step 4 (uses its test split)")
+            yaml_guess = self.txt_data_yaml.text().strip()
+            if yaml_guess and (not self.txt_test_source.text().strip().endswith((".yaml", ".yml"))):
+                self.txt_test_source.setText(yaml_guess)
+        self.chk_eval_labels.setEnabled(idx in (0, 1))
 
     def _browse_test_source(self):
         idx = self.btn_grp_source.checkedId()
@@ -2369,6 +2803,10 @@ class MainWindow(QMainWindow):
                 self.txt_test_source.setText(d)
         elif idx == 2:
             f, _ = QFileDialog.getOpenFileName(self, "Select Video File", "", "Video Files (*.mp4 *.avi *.mov *.mkv *.webm)")
+            if f:
+                self.txt_test_source.setText(f)
+        elif idx == 3:
+            f, _ = QFileDialog.getOpenFileName(self, "Select data.yaml", str(self.data_dir), "YAML Files (*.yaml *.yml)")
             if f:
                 self.txt_test_source.setText(f)
 
@@ -2387,7 +2825,12 @@ class MainWindow(QMainWindow):
             return
 
         mode_id = self.btn_grp_source.checkedId()
-        mode_str = "image" if mode_id == 0 else ("folder" if mode_id == 1 else "video")
+        mode_str = {0: "image", 1: "folder", 2: "video", 3: "split"}.get(mode_id, "image")
+        if mode_str == "split" and src_p.suffix.lower() not in (".yaml", ".yml"):
+            QMessageBox.warning(self, "data.yaml Required", "Please select the data.yaml created in Step 4.")
+            return
+        self.test_eval_card.hide()
+        self.last_eval_report = None
 
         conf = self.spin_test_conf.value()
         iou = self.spin_test_iou.value()
@@ -2398,8 +2841,10 @@ class MainWindow(QMainWindow):
         self.lbl_test_status.setText(f"Running inference ({mode_str.upper()})...")
         self.studio_mascot.set_state(DancingSvgMascot.STATE_DOWNLOADING)
 
+        evaluate = mode_str == "split" or (mode_str in ("image", "folder") and self.chk_eval_labels.isChecked())
         self.active_worker = TestInferenceWorker(
-            self.tester_engine, mode_str, model_p, src_p, conf, iou, save_enabled, save_dir
+            self.tester_engine, mode_str, model_p, src_p, conf, iou, save_enabled, save_dir,
+            evaluate=evaluate, eval_dir=save_dir if save_dir.parent.exists() else self.test_results_dir,
         )
         self.active_worker.progress_signal.connect(self._on_test_progress)
         self.active_worker.frame_signal.connect(self._on_test_frame)
@@ -2414,7 +2859,7 @@ class MainWindow(QMainWindow):
             self.lbl_test_status.setText("Aborting inference...")
 
     def _on_test_progress(self, cur: int, tot: int, desc: str):
-        self.prog_test.setMaximum(tot)
+        self.prog_test.setMaximum(tot)  # tot == 0 -> busy indicator while measuring accuracy
         self.prog_test.setValue(cur)
         self.lbl_test_status.setText(desc)
 
@@ -2432,10 +2877,13 @@ class MainWindow(QMainWindow):
         self.btn_run_test.setEnabled(True)
         self.btn_stop_test.setEnabled(False)
         self.studio_mascot.set_state(DancingSvgMascot.STATE_SUCCESS)
-        self.prog_test.setValue(self.prog_test.maximum())
+        self.prog_test.setMaximum(100)
+        self.prog_test.setValue(100)
 
         mode = out.get("mode")
         data = out.get("data", {})
+        if mode == "split":
+            mode = "folder"
 
         if mode == "image":
             annotated_bgr = data.get("annotated_bgr")
@@ -2488,7 +2936,42 @@ class MainWindow(QMainWindow):
             self.lbl_test_classes_badge.setText(f"Video Summary: {badge_str}")
             self.lbl_test_status.setText(f"Video test complete! Processed {data.get('processed_frames')} frames.{saved_msg}")
 
-        QMessageBox.information(self, "Test Complete", f"Model prediction completed successfully!\nMode: {mode.upper()}")
+        self._show_test_eval(out.get("eval"), Path(self.txt_test_model.text().strip()))
+
+    def _show_test_eval(self, ev: dict | None, model_path: Path):
+        """Shows accuracy when the tested data had labels; otherwise explains it was prediction-only."""
+        if ev and ev.get("error"):
+            self.test_eval_card.hide()
+            QMessageBox.warning(self, "Accuracy Not Measured",
+                                f"Predictions finished, but measuring accuracy failed:\n{ev['error']}")
+            return
+        if not ev:
+            self.test_eval_card.hide()
+            note = ("No labels were found, so this was prediction only (no accuracy)."
+                    if self.chk_eval_labels.isChecked() and self.btn_grp_source.checkedId() in (0, 1) else
+                    "Prediction only.")
+            self.lbl_test_status.setText(self.lbl_test_status.text() + "  •  " + note)
+            QMessageBox.information(self, "Test Complete", f"Model prediction completed.\n{note}")
+            return
+
+        report = self._build_eval_report(ev, model_path)
+        self.last_eval_report = report
+        box = ev.get("box") or {}
+        self.lbl_test_eval_title.setText(f"Accuracy — {report['accuracy_rows'][0][0]}")
+        self._fill_stat_grid(self.test_eval_grid, report["cards"][:7], per_row=7)
+        self.lbl_test_eval_note.setText("  ".join(report.get("warnings", [])) or
+                                        f"Labels: {ev.get('label_source') or ev.get('source', '')}")
+        self.test_eval_card.show()
+        QApplication.processEvents()
+        scroll = self.pages.currentWidget()
+        if isinstance(scroll, QScrollArea):
+            scroll.ensureWidgetVisible(self.test_eval_card, 0, 40)
+        QMessageBox.information(
+            self, "Test Complete",
+            f"Accuracy on {ev.get('images', 0)} images ({ev.get('instances', 0)} labelled objects):\n\n"
+            f"mAP50: {pct(box.get('map50'))}    mAP50-95: {pct(box.get('map50_95'))}\n"
+            f"Precision: {pct(box.get('precision'))}    Recall: {pct(box.get('recall'))}\n"
+            f"Accuracy*: {pct(ev.get('accuracy'))}\n\nOpen 'View Accuracy Report' for the confusion matrix and curves.")
 
     def _show_folder_test_item(self, idx: int):
         if not self.folder_test_results or idx < 0 or idx >= len(self.folder_test_results):
