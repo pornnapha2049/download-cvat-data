@@ -1,24 +1,38 @@
-# 🚀 CVAT to YOLO Studio & Auto-Trainer (Standalone AI Pipeline)
+# 🚀 CVAT to YOLO Studio & Auto-Trainer (Cozy AI Pipeline)
 
-โปรแกรม Python GUI (PyQt5) สำหรับประมวลผล Computer Vision แบบ **All-in-One Standalone Pipeline (7 ขั้นตอน)**:
-1. **CVAT Login**: หน้าเข้าสู่ระบบ CVAT Server แยกอิสระ ปลอดภัย ไม่มี URL เริ่มต้นค้างไว้
-2. **CVAT Downloader**: กรองและเลือก Task ดาวน์โหลด Annotation และรูปภาพ (แตกไฟล์และย้ายรูปออกจากโฟลเดอร์ `default` อัตโนมัติ พร้อมลบโฟลเดอร์ `default` ทิ้ง)
-3. **Merge Datasets**: รวม Dataset หลายๆ Task เข้าด้วยกันในโฟลเดอร์ `data/` (Merge & MD5 Deduplication)
-4. **COCO to YOLO Converter**: แปลงฟอร์แมต COCO 1.0 เป็น YOLO (Detection Bounding Box หรือ Segmentation Polygon)
-5. **Dataset Splitter**: แบ่งข้อมูล Train / Val / Test (ครอบคลุมทุกรูป 100% ทั้งที่มี Label และไม่มี Label/รูป Background)
-6. **YOLO Auto-Trainer**: Train โมเดล YOLO ด้วยระบบ Auto-Tune Hyperparameters, Early Stopping (Patience), Run Versioning (`_v1`, `_v2`, ...) และเปลี่ยนชื่อ `best.pt` เป็น `{custom_name}_v{num}.pt` ใน `runs/.../weights/` โดยตรง
-7. **Test Model (Inference & Evaluation)**: ทดสอบโมเดลที่ Train แล้วกับภาพเดี่ยว (Single Image), ทั้งโฟลเดอร์ (Entire Folder), หรือไฟล์วิดีโอ (Video File) พร้อมดูผลลัพธ์พรีวิวแบบ Real-time และเลือกบันทึกผลได้
+โปรแกรม Python GUI (PyQt5) สำหรับประมวลผล Computer Vision แบบ **All-in-One Connected Pipeline**:
+1. **หน้าจอ Login แรกเริ่มแบบต้นฉบับ (Dedicated Sign-In Screen)**: หน้าการ์ด Login สไตล์โมเดิร์นอยู่ตรงกลาง พร้อมมาสคอต **แมวอ้วนน่ารักดุ้กดิ๊ก (Mochi Cat)** กระดิกหางและขยับหูทักทาย สามารถกดเข้าสู่ระบบ หรือกดปุ่ม *"Work with Local Datasets (Skip Login / Offline Mode)"* เพื่อข้ามเข้าสู่ Studio ได้ทันที
+2. **ระบบ Studio Pipeline เชื่อมโยงกัน (Cohesive 6-Step Workflow)**:
+   - **Step 1: Task Downloader**: ค้นหา กรอง และเลือก Task ดาวน์โหลดจาก CVAT พร้อมแตกไฟล์และย้ายรูปออกจากโฟลเดอร์ `default` อัตโนมัติ
+   - **Step 2: Merge Datasets**: รวม Task ต่างๆ เข้าสู่โฟลเดอร์ `data/` เดียว พร้อมระบบ MD5 Collision Resolution ป้องกันรูปชื่อซ้ำ
+   - **Step 3: COCO to YOLO Converter**: แปลงฟอร์แมต COCO 1.0 เป็น YOLO Detection (Bounding Box) หรือ Segmentation (Polygon)
+   - **Step 4: Dataset Splitter**: แบ่งข้อมูล Train / Val / Test (ครอบคลุมทุกรูป 100% ทั้งที่มี Label และไม่มี Label/รูป Background)
+   - **Step 5: YOLO Auto-Trainer**: Train โมเดล YOLO ด้วยระบบ Auto-Tune Hyperparameters, Early Stopping (Patience), Run Versioning (`_v1`, `_v2`, ...) และเปลี่ยนชื่อ `best.pt` เป็น `{custom_name}_v{run_num}.pt` ใน `runs/.../weights/` โดยตรง
+   - **Step 6: Test Model (Inference & Evaluation)**: ทดสอบโมเดลที่ Train แล้วกับภาพเดี่ยว (Single Image), ทั้งโฟลเดอร์ (Entire Folder), หรือไฟล์วิดีโอ (Video File) พร้อมดูผลลัพธ์พรีวิวแบบ Real-time และเลือกบันทึกผลได้
 
 ---
 
 ## 🌟 ฟีเจอร์เด่น (Key Features)
 
-1. **หน้าจอแยกตามขั้นตอนแบบ Sequential Standalone (7 Steps Flow)**:
-   - นำทางลื่นไหลทีละขั้นตอนแบบ Step-by-Step ผ่านปุ่ม **"Next Step ➔"** และ **"< Previous"** โดยไม่มีปุ่มแท็บใหญ่เกะกะด้านบน
-   - หน้า **Login ถูกแยกเป็นหน้าแรก (Step 1)** อย่างชัดเจน พร้อมการ์ดแสดงสถานะและข้อมูล Server เมื่อเชื่อมต่อสำเร็จ
-   - แถบด้านบนออกแบบตามสไตล์ Mobile Wellness App ประกอบด้วยปุ่มย้อนกลับวงกลม `< Back`, หัวข้อหน้าจอปัจจุบัน, กระดิ่ง Notification สีกรมท่าพร้อมจุดแจ้งเตือนสีชมพู, และมาสคอต Clover Byte
-   - แถบด้านล่างมีตัวบอกสถานะ Carousel Step Pills (1 ถึง 7) สำหรับติดตามและสลับไปยังหน้าที่ต้องการได้อย่างยืดหยุ่น
-   - แต่ละหน้ามีตัวเลือก Input / Output และปุ่มประมวลผลของตนเองอย่างสมบูรณ์ และมีปุ่มกดก้าวไปสู่ขั้นตอนถัดไปในตัว
+1. **มาสคอตแมวอ้วนน่ารักดุ้กดิ๊ก (Mochi Cat Chubby Mascot)**:
+   - มาสคอตแมวอ้วนเวกเตอร์ SVG ดุ้กดิ๊กได้ตลอดเวลา หางกระดิก ขยับหูกระดิกดุ๊กดิ๊ก แก้มอมชมพู ตาแป๋วกะพริบได้
+   - ตอบสนองตามสถานะของโปรแกรม:
+     - **IDLE**: แมวอ้วนหายใจเบาๆ หางแกว่งไปมาอย่างสบายอารมณ์
+     - **DOWNLOADING / PROCESSING**: แมวอ้วนขยับดุ๊กดิ๊กรัวๆ ตะปบอุ้งเท้าอย่างตื่นเต้น พร้อมประกายดาว
+     - **TRAINING**: คาดผ้าคาดหัวสีแดง ตั้งใจฝึกฝนโมเดลอย่างมุ่งมั่น
+     - **SUCCESS**: แมวกระโดดดีใจ มีปลาทูทอง 🐟 และหัวใจลอยขึ้นมาอย่างมีความสุข!
+
+2. **หน้า Login แบบแรกที่แยกชัดเจน (Dedicated Centered Sign-In Screen)**:
+   - เปิดโปรแกรมมาจะพบกับหน้า Login แบบการ์ดตรงกลางที่สวยงาม มีแมวอ้วนดุ้กดิ๊กนั่งอยู่ด้านบน
+   - ช่อง **CVAT Server URL** เริ่มต้นเป็นช่องว่าง `""` พร้อมแสดง Placeholder ตัวอย่าง เพื่อความปลอดภัย
+   - มีปุ่ม **"🚀 Sign In & Launch Studio"** เพื่อเชื่อมต่อและดึงข้อมูล Tasks
+   - มีปุ่ม **"📁 Work with Local Datasets (Skip Login / Offline Mode)"** สำหรับกรณีที่มี Dataset ในเครื่องอยู่แล้ว สามารถกดข้ามเข้าสู่ Studio ได้ทันที
+
+3. **หน้าจอ Studio แบบเชื่อมโยงต่อเนื่อง (Cohesive Stepper Bar & Connected Pipeline)**:
+   - ด้านบนมีแถบ **Stepper Bar (Step 1 ถึง Step 6)** สลับไปมาได้อย่างอิสระ ไม่จำกัดเป็น Standalone แยกเดี่ยว
+   - ด้านล่างมีปุ่มนำทาง **`< Previous Step`** และ **`Next Step ➔`** ควบคู่กับปุ่ม Action ในแต่ละหน้า
+   - มีปุ่ม **"Logout"** ที่แถบ Header เพื่อสลับกลับสู่หน้า Login ได้ตลอดเวลา
+   - มีปุ่ม **"data/ Folder"** เปิดเข้าสู่โฟลเดอร์ข้อมูลใน Windows Explorer ทันที
 
 2. **รวมไฟล์ข้อมูลทั้งหมดไว้ในโฟลเดอร์ `data/` เดียว (Single Unified Data Folder)**:
    - ไม่มีการสร้างโฟลเดอร์กระจัดกระจาย ข้อมูลภาพและ Label ทั้งหมดจัดเก็บอย่างเป็นระเบียบภายใต้โฟลเดอร์ `C:\Articulus\cvat\data`:
@@ -74,7 +88,7 @@
 10. **ดีไซน์ Mindfulness Pastel Wellness พร้อม SVG Vector แท้ 100%**:
     - ออกแบบตามโทนสีสุขภาพจิตและการเรียนที่สบายตา ([Pinterest Reference](https://i.pinimg.com/1200x/69/a3/a3/69a3a365c2017d08d2c1ce4795633dd5.jpg))
     - คลังไอคอน SVG 37 แบบใน [`ui/svg_icons.py`](file:///C:/Articulus/cvat/ui/svg_icons.py) คมชัดทุกขนาดหน้าจอ
-    - ตกแต่งด้วย **Dancing SVG Mascot ("Clover Byte" .☘︎ ݁˖)** ดิ้นโบกมือและตอบสนองตามสถานะการทำงาน
+    - ตกแต่งด้วย **Dancing Chubby Cat Mascot ("Mochi Cat" • แมวอ้วนน่ารักดุ้กดิ๊ก)** ดุ๊กดิ๊กกระดิกหางและตอบสนองตามสถานะการทำงาน
 
 ---
 

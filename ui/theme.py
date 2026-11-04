@@ -31,7 +31,158 @@ QScrollArea > QWidget > QWidget {
 }
 
 /* ========================================================= */
-/* Top App Header (Clean Modern Mobile / Tablet Style)       */
+/* Dedicated Login Page Styles (First Version Aesthetic)     */
+/* ========================================================= */
+QFrame.LoginCard {
+    background-color: #ffffff;
+    border: 2px solid #dce4ec;
+    border-radius: 24px;
+    padding: 24px;
+}
+
+QLabel#loginTitle {
+    font-size: 24px;
+    font-weight: 800;
+    color: #0f3747;
+}
+
+QLabel#loginSubtitle {
+    font-size: 13px;
+    color: #64748b;
+}
+
+QLineEdit.LoginInput {
+    background-color: #f8fafc;
+    color: #0f3747;
+    border: 1.5px solid #cbd5e1;
+    border-radius: 10px;
+    padding: 10px 14px;
+    font-size: 13px;
+}
+
+QLineEdit.LoginInput:focus {
+    border: 2px solid #0f3747;
+    background-color: #ffffff;
+}
+
+QPushButton.LoginButton {
+    background-color: #0f3747;
+    color: #ffffff;
+    border: none;
+    border-radius: 12px;
+    padding: 12px 24px;
+    font-weight: 800;
+    font-size: 14px;
+    min-height: 42px;
+}
+
+QPushButton.LoginButton:hover {
+    background-color: #174b5f;
+}
+
+QPushButton.LoginButton:pressed {
+    background-color: #092430;
+}
+
+QPushButton.SkipLoginButton {
+    background-color: transparent;
+    color: #64748b;
+    border: none;
+    font-size: 12px;
+    text-decoration: underline;
+    font-weight: 600;
+}
+
+QPushButton.SkipLoginButton:hover {
+    color: #0f3747;
+}
+
+QPushButton.LogoutButton {
+    background-color: #fee2e2;
+    color: #dc2626;
+    border: 1px solid #fca5a5;
+    border-radius: 8px;
+    padding: 5px 12px;
+    font-weight: 700;
+    font-size: 11px;
+}
+
+QPushButton.LogoutButton:hover {
+    background-color: #ef4444;
+    color: #ffffff;
+    border-color: #dc2626;
+}
+
+QLabel.AlertError {
+    background-color: #fef2f2;
+    color: #dc2626;
+    border: 1.5px solid #f87171;
+    border-radius: 10px;
+    padding: 8px 12px;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+QLabel.AlertSuccess {
+    background-color: #f0fdf4;
+    color: #166534;
+    border: 1.5px solid #86efac;
+    border-radius: 10px;
+    padding: 8px 12px;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+/* ========================================================= */
+/* Studio Top Stepper Bar Container & Buttons                */
+/* ========================================================= */
+QFrame.StepperContainer {
+    background-color: #ffffff;
+    border: 1.5px solid #dce4ec;
+    border-radius: 16px;
+    padding: 4px;
+}
+
+QPushButton.StepButton {
+    background-color: transparent;
+    color: #64748b;
+    border: none;
+    border-radius: 10px;
+    padding: 8px 12px;
+    font-size: 12px;
+    font-weight: 700;
+    text-align: center;
+}
+
+QPushButton.StepButton:hover {
+    background-color: #f1f5f9;
+    color: #0f3747;
+}
+
+QPushButton.StepButtonActive {
+    background-color: #0f3747;
+    color: #ffffff;
+    border: none;
+    border-radius: 10px;
+    padding: 8px 12px;
+    font-size: 12px;
+    font-weight: 800;
+    text-align: center;
+}
+
+QFrame.GuideBox {
+    background-color: #f0fdf4;
+    border: 1.5px dashed #86efac;
+    border-radius: 12px;
+    padding: 6px 14px;
+}
+
+QLabel#guideLabel {
+    color: #166534;
+    font-weight: 600;
+    font-size: 12px;
+}
+
 /* ========================================================= */
 QFrame#topAppBar {
     background-color: transparent;
