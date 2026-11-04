@@ -1436,32 +1436,43 @@ class MainWindow(QMainWindow):
         self.spin_test.setSuffix("%")
         box_ratios_layout.addWidget(self.spin_test, 2, 2)
 
-        self.slider_train.valueChanged.connect(self.spin_train.setValue)
-        self.spin_train.valueChanged.connect(self.slider_train.setValue)
-        self.slider_val.valueChanged.connect(self.spin_val.setValue)
-        self.spin_val.valueChanged.connect(self.slider_val.setValue)
-        self.slider_test.valueChanged.connect(self.spin_test.setValue)
-        self.spin_test.valueChanged.connect(self.slider_test.setValue)
+        # Dragging a slider or typing a number re-balances the other two so the total is always 100%
+        self._ratio_widgets = {
+            "train": (self.slider_train, self.spin_train),
+            "val": (self.slider_val, self.spin_val),
+            "test": (self.slider_test, self.spin_test),
+        }
+        self._ratio_busy = False
+        self._split_img_count_cache: tuple[str, int] | None = None
+        for key, (slider, spin) in self._ratio_widgets.items():
+            slider.valueChanged.connect(lambda v, k=key: self._on_ratio_changed(k, v))
+            spin.valueChanged.connect(lambda v, k=key: self._on_ratio_changed(k, v))
+
+        self.lbl_ratio_total = QLabel("")
+        self.lbl_ratio_total.setProperty("class", "StatText")
+        box_ratios_layout.addWidget(self.lbl_ratio_total, 3, 0, 1, 3)
+        self.txt_split_img_src.textChanged.connect(lambda _: self._update_ratio_summary())
 
         self.chk_all_images = QCheckBox("Include ALL images in dataset (background images without annotations receive empty label files)")
         self.chk_all_images.setChecked(True)
         self.chk_all_images.setEnabled(False)
-        box_ratios_layout.addWidget(self.chk_all_images, 3, 0, 1, 3)
+        box_ratios_layout.addWidget(self.chk_all_images, 4, 0, 1, 3)
+        self._update_ratio_summary()
 
         self.btn_run_split = QPushButton("Split Dataset && Generate data.yaml")
         self.btn_run_split.setProperty("class", "PrimaryButton")
         self.btn_run_split.setIcon(get_svg_icon("step_split", 18))
         self.btn_run_split.setIconSize(QSize(18, 18))
         self.btn_run_split.clicked.connect(self._on_run_split)
-        box_ratios_layout.addWidget(self.btn_run_split, 4, 0, 1, 3)
+        box_ratios_layout.addWidget(self.btn_run_split, 5, 0, 1, 3)
 
         self.prog_split = QProgressBar()
         self.prog_split.setValue(0)
-        box_ratios_layout.addWidget(self.prog_split, 5, 0, 1, 3)
+        box_ratios_layout.addWidget(self.prog_split, 6, 0, 1, 3)
 
         self.lbl_split_stats = QLabel("No dataset split yet.")
         self.lbl_split_stats.setStyleSheet("color: #10232b; font-weight: 600; min-height: 24px;")
-        box_ratios_layout.addWidget(self.lbl_split_stats, 6, 0, 1, 3)
+        box_ratios_layout.addWidget(self.lbl_split_stats, 7, 0, 1, 3)
 
         layout.addWidget(ratios_card)
 
@@ -2376,6 +2387,81 @@ class MainWindow(QMainWindow):
     # -----------------------------------------------------------------
     # STEP 4: Split Slots
     # -----------------------------------------------------------------
+    # -----------------------------------------------------------------
+    # Split ratios: always sum to 100%
+    # -----------------------------------------------------------------
+    def _set_ratio(self, key: str, value: int):
+        slider, spin = self._ratio_widgets[key]
+        for w in (slider, spin):
+            w.blockSignals(True)
+            w.setValue(int(value))
+            w.blockSignals(False)
+
+    def _on_ratio_changed(self, changed: str, value: int):
+        """Re-balances the other two ratios so train + val + test = 100.
+        train changed -> val & test share the rest (keeping their proportion)
+        val changed   -> test absorbs the difference, then train if test hits its limit
+        test changed  -> val absorbs the difference, then train if val hits its limit
+        """
+        if self._ratio_busy:
+            return
+        self._ratio_busy = True
+        try:
+            self._set_ratio(changed, value)  # keep slider & spin box in sync
+            t, v, te = self.spin_train.value(), self.spin_val.value(), self.spin_test.value()
+            v_lo, v_hi = self.spin_val.minimum(), self.spin_val.maximum()
+            te_lo, te_hi = self.spin_test.minimum(), self.spin_test.maximum()
+
+            if changed == "train":
+                rest = 100 - t
+                share = v / (v + te) if (v + te) > 0 else 1.0
+                v = round(rest * share)
+                v = max(v_lo, rest - te_hi, min(v, v_hi, rest - te_lo))
+                te = rest - v
+            elif changed == "val":
+                te = 100 - t - v
+                if te < te_lo:
+                    te = te_lo
+                elif te > te_hi:
+                    te = te_hi
+                t = 100 - v - te
+            else:  # test
+                v = 100 - t - te
+                if v < v_lo:
+                    v = v_lo
+                elif v > v_hi:
+                    v = v_hi
+                t = 100 - v - te
+
+            self._set_ratio("train", t)
+            self._set_ratio("val", v)
+            self._set_ratio("test", te)
+        finally:
+            self._ratio_busy = False
+        self._update_ratio_summary()
+
+    def _update_ratio_summary(self):
+        """Shows the total and how many images each split will get (same rounding as the splitter)."""
+        t, v, te = self.spin_train.value(), self.spin_val.value(), self.spin_test.value()
+        total = t + v + te
+        src = self.txt_split_img_src.text().strip()
+        if not self._split_img_count_cache or self._split_img_count_cache[0] != src:
+            try:
+                n_imgs = sum(1 for f in Path(src).iterdir() if f.is_file() and f.suffix.lower() in IMAGE_EXTS)
+            except Exception:
+                n_imgs = 0
+            self._split_img_count_cache = (src, n_imgs)
+        n = self._split_img_count_cache[1]
+        text = f"Total: {total}%"
+        if n:
+            n_train, n_val = int(n * t / 100), int(n * v / 100)
+            if v > 0 and n_val == 0 and n >= 2:
+                n_val = 1
+                n_train = max(0, n_train - 1)
+            n_test = n - n_train - n_val
+            text += f"   →   Train {n_train} · Val {n_val} · Test {n_test}   (of {n} images)"
+        self.lbl_ratio_total.setText(text)
+
     def _on_run_split(self):
         img_src = Path(self.txt_split_img_src.text().strip())
         lbl_src = Path(self.txt_split_lbl_src.text().strip())
