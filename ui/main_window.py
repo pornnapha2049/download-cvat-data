@@ -46,6 +46,7 @@ from ui.dancing_svg import DancingSvgMascot, AnimatedWavePill, get_cat_pixmap
 from ui.theme import DARK_STYLESHEET, PALETTE
 from ui.svg_icons import get_svg_icon, get_svg_pixmap, icon_name_for
 from ui.report_dialog import ReportDialog, StatCard, pct, fmt_secs
+from ui.notifications import NotificationCenter
 
 try:  # optional: secure password storage (Windows Credential Manager / macOS Keychain)
     import keyring
@@ -450,6 +451,7 @@ class MainWindow(QMainWindow):
         self.last_train_report: dict | None = None
         self.last_eval_report: dict | None = None
         self.settings = QSettings("Articulus", "CVAT to YOLO Studio")
+        self.notify = NotificationCenter(self, self.settings)
 
         self._init_ui()
         self.setStyleSheet(DARK_STYLESHEET)
@@ -648,12 +650,11 @@ class MainWindow(QMainWindow):
         head_txt.addWidget(lbl_sub)
         header.addLayout(head_txt, 1)
 
-        bell = QLabel()
-        bell.setProperty("class", "CircleBadge")
-        bell.setAlignment(Qt.AlignCenter)
-        bell.setPixmap(get_svg_pixmap("bell", 24, 24))
-        bell.setFixedSize(52, 52)
-        bell.setStyleSheet("border-radius: 26px; min-width: 52px; max-width: 52px; min-height: 52px; max-height: 52px;")
+        bell = QPushButton()
+        bell.setObjectName("circleNavButton")
+        bell.setIcon(get_svg_icon("bell", 24))
+        bell.setIconSize(QSize(24, 24))
+        self.notify.attach_button(bell)
         header.addWidget(bell, 0, Qt.AlignTop)
         layout.addLayout(header)
 
@@ -932,9 +933,7 @@ class MainWindow(QMainWindow):
         bell.setObjectName("circleNavButton")
         bell.setIcon(get_svg_icon("bell", 22))
         bell.setIconSize(QSize(22, 22))
-        bell.setCursor(Qt.PointingHandCursor)
-        bell.setToolTip("Open runs/ folder")
-        bell.clicked.connect(lambda: self._open_dir(self.runs_dir))
+        self.notify.attach_button(bell)
         layout.addWidget(bell)
 
         return card
@@ -2278,6 +2277,9 @@ class MainWindow(QMainWindow):
         self.btn_download_tasks.setEnabled(True)
         self.studio_mascot.set_state(DancingSvgMascot.STATE_SUCCESS)
         self.lbl_cvat_status.setText(f"Downloaded and extracted {len(results)} tasks into data/raw_tasks!")
+        self.notify.add("success", "Download finished",
+                        f"{len(results)} CVAT task(s) downloaded and extracted.",
+                        {"type": "folder", "path": self.txt_dl_folder.text().strip()})
         QMessageBox.information(
             self,
             "Download Finished",
@@ -2285,6 +2287,7 @@ class MainWindow(QMainWindow):
         )
 
     def _on_download_error(self, err_msg: str):
+        self.notify.add("error", "Download failed", err_msg[:300])
         self.btn_download_tasks.setEnabled(True)
         self.studio_mascot.set_state(DancingSvgMascot.STATE_ERROR)
         self.lbl_cvat_status.setText(f"Error: {err_msg}")
@@ -2317,16 +2320,19 @@ class MainWindow(QMainWindow):
         self.studio_mascot.set_state(DancingSvgMascot.STATE_SUCCESS)
         self.prog_merge.setValue(100)
 
+        cats = [c.get("name", "") for c in stats.get("categories", [])]
         summary = (
-            f"Merged: {stats.get('total_tasks', 0)} tasks | "
-            f"Images: {stats.get('total_images', 0)} | "
-            f"Annotations: {stats.get('total_annotations', 0)} | "
-            f"Categories: {stats.get('total_categories', 0)}"
+            f"Merged: {stats.get('jsons_count', 0)} tasks | "
+            f"Images: {stats.get('images_count', 0)} | "
+            f"Annotations: {stats.get('annotations_count', 0)} | "
+            f"Categories ({len(cats)}): {', '.join(cats)}"
         )
         self.lbl_merge_stats.setText(summary)
+        self.notify.add("success", "Merge finished", summary, {"type": "folder", "path": self.txt_merge_dst.text().strip()})
         QMessageBox.information(self, "Merge Successful", f"Dataset Merge Completed!\n\n{summary}\nOutput: {self.txt_merge_dst.text()}")
 
     def _on_merge_error(self, err_msg: str):
+        self.notify.add("error", "Merge failed", err_msg[:300])
         self.btn_run_merge.setEnabled(True)
         self.studio_mascot.set_state(DancingSvgMascot.STATE_ERROR)
         self.lbl_merge_stats.setText(f"Merge Error: {err_msg}")
@@ -2376,9 +2382,12 @@ class MainWindow(QMainWindow):
             f"Mode: {stats.get('mode', 'unknown')}"
         )
         self.lbl_conv_stats.setText(summary)
+        self.notify.add("success", "COCO → YOLO finished", summary,
+                        {"type": "folder", "path": self.txt_conv_labels_dst.text().strip()})
         QMessageBox.information(self, "Conversion Complete", f"COCO to YOLO Conversion Completed!\n\n{summary}\nOutput: {self.txt_conv_labels_dst.text()}")
 
     def _on_convert_error(self, err_msg: str):
+        self.notify.add("error", "Conversion failed", err_msg[:300])
         self.btn_run_convert.setEnabled(True)
         self.studio_mascot.set_state(DancingSvgMascot.STATE_ERROR)
         self.lbl_conv_stats.setText(f"Conversion Error: {err_msg}")
@@ -2509,10 +2518,14 @@ class MainWindow(QMainWindow):
             f"data.yaml generated!"
         )
         self.lbl_split_stats.setText(summary)
+        self.notify.add("success", "Dataset split finished", summary,
+                        {"type": "file", "path": str(stats.get("data_yaml_path", "")),
+                         "fallback": self.txt_split_dst.text().strip()})
         self._refresh_yaml_preview()
         QMessageBox.information(self, "Split Complete", f"Dataset Partition Completed!\n\n{summary}\nOutput: {self.txt_split_dst.text()}")
 
     def _on_split_error(self, err_msg: str):
+        self.notify.add("error", "Split failed", err_msg[:300])
         self.btn_run_split.setEnabled(True)
         self.studio_mascot.set_state(DancingSvgMascot.STATE_ERROR)
         self.lbl_split_stats.setText(f"Split Error: {err_msg}")
@@ -2654,6 +2667,19 @@ class MainWindow(QMainWindow):
         if isinstance(scroll, QScrollArea):
             scroll.ensureWidgetVisible(self.train_result_card, 0, 40)
         self._append_train_log(f"📄 Report saved: {report.get('report_md', '-')}")
+
+        main = report.get("test_metrics") or report.get("val_metrics") or {}
+        mbox = main.get("box") or {}
+        which = "Test" if report.get("test_metrics") else "Val"
+        stopped = res.get("stopped_by_user")
+        self.notify.add(
+            "warning" if stopped else "success",
+            f"Training {'stopped' if stopped else 'finished'} — {res.get('run_name', '')}",
+            f"{which} mAP50 {pct(mbox.get('map50'))} · Precision {pct(mbox.get('precision'))} · "
+            f"Recall {pct(mbox.get('recall'))} · time {fmt_secs(res.get('seconds'))}",
+            {"type": "report", "path": report.get("report_md"), "fallback": str(run_dir)},
+            payload=report,
+        )
         self._show_report(report)
 
     # -----------------------------------------------------------------
@@ -2812,6 +2838,7 @@ class MainWindow(QMainWindow):
         return report
 
     def _on_train_error(self, err_msg: str):
+        self.notify.add("error", "Training failed", err_msg[:300])
         self.btn_start_train.setEnabled(True)
         self.btn_stop_train.setEnabled(False)
         self.studio_mascot.set_state(DancingSvgMascot.STATE_ERROR)
@@ -3004,6 +3031,7 @@ class MainWindow(QMainWindow):
 
     def _show_test_eval(self, ev: dict | None, model_path: Path):
         """Shows accuracy when the tested data had labels; otherwise explains it was prediction-only."""
+        self._notify_test(ev, model_path)
         if ev and ev.get("error"):
             self.test_eval_card.hide()
             QMessageBox.warning(self, "Accuracy Not Measured",
@@ -3018,7 +3046,8 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Test Complete", f"Model prediction completed.\n{note}")
             return
 
-        report = self._build_eval_report(ev, model_path)
+        report = getattr(self, "_pending_eval_report", None) or self._build_eval_report(ev, model_path)
+        self._pending_eval_report = None
         self.last_eval_report = report
         box = ev.get("box") or {}
         self.lbl_test_eval_title.setText(f"Accuracy — {report['accuracy_rows'][0][0]}")
@@ -3089,7 +3118,24 @@ class MainWindow(QMainWindow):
             id_item.setTextAlignment(Qt.AlignCenter)
             self.tbl_test_detections.setItem(row, 3, id_item)
 
+    def _notify_test(self, ev: dict | None, model_path: Path):
+        save_dir = self.txt_test_save_dir.text().strip()
+        if ev and not ev.get("error"):
+            box = ev.get("box") or {}
+            report = self._build_eval_report(ev, model_path)
+            self._pending_eval_report = report
+            self.notify.add("success", f"Test finished — {report['accuracy_rows'][0][0]}",
+                            f"{ev.get('images', 0)} images · mAP50 {pct(box.get('map50'))} · "
+                            f"Accuracy {pct(ev.get('accuracy'))}",
+                            {"type": "report", "path": report.get("report_md"), "fallback": ev.get("save_dir")},
+                            payload=report)
+        else:
+            note = "accuracy not measured: " + ev["error"][:120] if (ev and ev.get("error")) else "prediction only (no labels)"
+            self.notify.add("info", "Test finished", f"{model_path.name} · {note}",
+                            {"type": "folder", "path": save_dir})
+
     def _on_test_error(self, err_msg: str):
+        self.notify.add("error", "Test failed", err_msg[:300])
         self.btn_run_test.setEnabled(True)
         self.btn_stop_test.setEnabled(False)
         self.studio_mascot.set_state(DancingSvgMascot.STATE_ERROR)
