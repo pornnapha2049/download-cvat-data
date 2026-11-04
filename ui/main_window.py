@@ -260,24 +260,24 @@ class TrainWorker(QThread):
 
 class MainWindow(QMainWindow):
     STEP_DESCRIPTIONS = [
-        ("Step 1: Task Explorer", "🌐 สำรวจและดาวน์โหลด Tasks (COCO 1.0 + Clean /images/default)"),
-        ("Step 2: Merge & Convert", "🔄 รวม Datasets เข้าด้วยกัน & แปลง COCO เป็น YOLO (Det/Seg)"),
+        ("Step 1: Task Explorer", "☘︎ สำรวจและดาวน์โหลด Tasks (COCO 1.0 + Clean /images/default)"),
+        ("Step 2: Merge & Convert", "🧩 รวม Datasets เข้าด้วยกัน & แปลง COCO เป็น YOLO (Det/Seg)"),
         ("Step 3: Split Dataset", "✂️ แบ่ง Train/Val/Test โดยนำทุกรูปภาพเข้าร่วม (รวม Backgrounds)"),
         ("Step 4: YOLO Training", "🧠 ปรับ Auto-Tune Hyperparameters & เริ่ม Train พร้อม Early Stopping"),
-        ("Step 5: Runs & Explorer", "📂 สำรวจผลลัพธ์การเทรน ตรวจสอบ weights และ data.yaml"),
+        ("Step 5: Runs & Explorer", "☕ สำรวจผลลัพธ์การเทรน ตรวจสอบ weights และ data.yaml"),
     ]
 
     STEP_GUIDES = [
-        "💡 ขั้นตอนที่ 1: เลือก Tasks ที่ต้องการดาวน์โหลด หรือฟิลเตอร์ตาม stage/state แล้วกด 'Download & Auto-Extract Tasks' ระบบจะแตกไฟล์และย้ายรูปออกจาก /images/default ให้เองครับ",
-        "💡 ขั้นตอนที่ 2: กด '🧩 Merge Datasets' เพื่อรวมข้อมูลและแก้ชื่อภาพซ้ำ จากนั้นเลือกว่าจะแปลงเป็น Detection (Bounding Box) หรือ Segmentation (Polygon) แล้วกด Convert",
-        "💡 ขั้นตอนที่ 3: ปรับสัดส่วนเปอร์เซ็นต์ Train / Val / Test ตามต้องการ (รูปภาพทุกรูปจะถูกนำมารวม 100% แม้ไม่มี Label ก็ตาม) แล้วกด Split",
-        "💡 ขั้นตอนที่ 4: กดปุ่ม '⚡ Auto-Tune Hyperparameters' เพื่อตั้งค่าโมเดลให้เหมาะกับจำนวนภาพ ตั้งชื่อโฟลเดอร์รัน แล้วกด Start YOLO Training ได้เลย!",
-        "💡 ขั้นตอนที่ 5: ตรวจสอบโฟลเดอร์ผลลัพธ์ โมเดล Weights (.pt) ที่ตั้งชื่อตามที่คุณกำหนด และกราฟผลการเทรนอย่างละเอียด",
+        ".☘︎ ݁˖ ขั้นตอนที่ 1: เลือก Tasks ที่ต้องการดาวน์โหลด หรือฟิลเตอร์ตาม stage/state แล้วกด 'Download & Auto-Extract Tasks' ระบบจะแตกไฟล์และย้ายรูปออกจาก /images/default ให้เองครับ",
+        ".☘︎ ݁˖ ขั้นตอนที่ 2: กด '🧩 Merge Datasets' เพื่อรวมข้อมูลและแก้ชื่อภาพซ้ำ จากนั้นเลือกว่าจะแปลงเป็น Detection (Bounding Box) หรือ Segmentation (Polygon) แล้วกด Convert",
+        ".☘︎ ݁˖ ขั้นตอนที่ 3: ปรับสัดส่วนเปอร์เซ็นต์ Train / Val / Test ตามต้องการ (รูปภาพทุกรูปจะถูกนำมารวม 100% แม้ไม่มี Label ก็ตาม) แล้วกด Split",
+        ".☘︎ ݁˖ ขั้นตอนที่ 4: กดปุ่ม '⚡ Auto-Tune Hyperparameters' เพื่อตั้งค่าโมเดลให้เหมาะกับจำนวนภาพ ตั้งชื่อโฟลเดอร์รัน แล้วกด Start YOLO Training ได้เลย!",
+        ".☘︎ ݁˖ ขั้นตอนที่ 5: ตรวจสอบโฟลเดอร์ผลลัพธ์ โมเดล Weights (.pt) ที่ตั้งชื่อตามที่คุณกำหนด และกราฟผลการเทรนอย่างละเอียด",
     ]
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("CVAT to YOLO Studio • Enterprise AI Pipeline")
+        self.setWindowTitle(".☘︎ ݁˖ CVAT to YOLO Studio • Cozy AI Pipeline")
         self.resize(1260, 880)
         self.setMinimumSize(1020, 740)
 
@@ -357,12 +357,12 @@ class MainWindow(QMainWindow):
         card_layout.addLayout(mascot_box)
 
         # Title & Subtitle
-        lbl_title = QLabel("CVAT Portal Sign-In")
+        lbl_title = QLabel(".☘︎ ݁˖ CVAT Portal Sign-In")
         lbl_title.setObjectName("loginTitle")
         lbl_title.setAlignment(Qt.AlignCenter)
         card_layout.addWidget(lbl_title)
 
-        lbl_sub = QLabel("Enter your CVAT credentials to access datasets, images & annotations.")
+        lbl_sub = QLabel("Cozy AI Studio • Enter credentials to access datasets, images & annotations.")
         lbl_sub.setObjectName("loginSubtitle")
         lbl_sub.setAlignment(Qt.AlignCenter)
         lbl_sub.setWordWrap(True)
@@ -379,14 +379,14 @@ class MainWindow(QMainWindow):
 
         # Form Inputs
         lbl_url = QLabel("CVAT Server URL:")
-        lbl_url.setStyleSheet("font-weight: 600; color: #94a3b8;")
+        lbl_url.setStyleSheet("font-weight: 600; color: #736154;")
         card_layout.addWidget(lbl_url)
         self.txt_login_url = QLineEdit("http://1.10.131.222:8080/projects")
         self.txt_login_url.setProperty("class", "LoginInput")
         card_layout.addWidget(self.txt_login_url)
 
         lbl_user = QLabel("Username:")
-        lbl_user.setStyleSheet("font-weight: 600; color: #94a3b8;")
+        lbl_user.setStyleSheet("font-weight: 600; color: #736154;")
         card_layout.addWidget(lbl_user)
         self.txt_login_user = QLineEdit()
         self.txt_login_user.setPlaceholderText("Enter your CVAT username")
@@ -394,7 +394,7 @@ class MainWindow(QMainWindow):
         card_layout.addWidget(self.txt_login_user)
 
         lbl_pass = QLabel("Password:")
-        lbl_pass.setStyleSheet("font-weight: 600; color: #94a3b8;")
+        lbl_pass.setStyleSheet("font-weight: 600; color: #736154;")
         card_layout.addWidget(lbl_pass)
         self.txt_login_pass = QLineEdit()
         self.txt_login_pass.setEchoMode(QLineEdit.Password)
@@ -406,11 +406,11 @@ class MainWindow(QMainWindow):
         # Status Label
         self.lbl_login_status = QLabel("")
         self.lbl_login_status.setAlignment(Qt.AlignCenter)
-        self.lbl_login_status.setStyleSheet("color: #38bdf8; font-weight: 600;")
+        self.lbl_login_status.setStyleSheet("color: #5e8460; font-weight: 700;")
         card_layout.addWidget(self.lbl_login_status)
 
         # Login Action Button
-        self.btn_do_login = QPushButton("🚀 Sign In & Launch Studio")
+        self.btn_do_login = QPushButton("☘︎ Sign In & Launch Studio")
         self.btn_do_login.setProperty("class", "LoginButton")
         self.btn_do_login.setCursor(Qt.PointingHandCursor)
         self.btn_do_login.clicked.connect(self._on_do_login)
@@ -487,19 +487,19 @@ class MainWindow(QMainWindow):
         text_layout.setSpacing(3)
 
         title_row = QHBoxLayout()
-        title_lbl = QLabel("🚀 CVAT to YOLO Studio & Pipeline")
+        title_lbl = QLabel(".☘︎ ݁˖ CVAT to YOLO Studio")
         title_lbl.setObjectName("titleLabel")
         title_row.addWidget(title_lbl)
 
         # Pulsing Activity Indicator
-        self.wave_indicator = AnimatedWavePill(40, 20)
+        self.wave_indicator = AnimatedWavePill(42, 22)
         title_row.addWidget(self.wave_indicator)
         title_row.addStretch()
 
         text_layout.addLayout(title_row)
 
         subtitle_lbl = QLabel(
-            "Step-by-Step AI Pipeline: CVAT Downloader ➔ Auto-Cleanup ➔ COCO Merger ➔ "
+            "Cozy AI Pipeline: CVAT Downloader ➔ Auto-Cleanup ➔ COCO Merger ➔ "
             "Polygon-to-YOLO (Det/Seg) ➔ Full Dataset Split ➔ YOLO Auto-Trainer"
         )
         subtitle_lbl.setObjectName("subtitleLabel")
@@ -557,11 +557,11 @@ class MainWindow(QMainWindow):
 
         self.step_buttons: list[QPushButton] = []
         step_titles = [
-            ("1. Task Explorer", "Fetch & Flatten Images"),
-            ("2. Merge & Convert", "COCO 1.0 to YOLO"),
-            ("3. Dataset Splitter", "Train/Val/Test All Imgs"),
-            ("4. YOLO Auto-Trainer", "Auto-Tune & Train Model"),
-            ("5. Runs & Explorer", "Explore Weights & Logs"),
+            ("☘︎ 1. Task Explorer", "Fetch & Flatten Images"),
+            ("🧩 2. Merge & Convert", "COCO 1.0 to YOLO"),
+            ("✂️ 3. Dataset Splitter", "Train/Val/Test All Imgs"),
+            ("🧠 4. YOLO Auto-Trainer", "Auto-Tune & Train Model"),
+            ("☕ 5. Runs & Explorer", "Explore Weights & Logs"),
         ]
 
         for idx, (title, sub) in enumerate(step_titles):
