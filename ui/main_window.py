@@ -502,6 +502,10 @@ class MainWindow(QMainWindow):
         self.setStyleSheet(DARK_STYLESHEET)
         self._apply_inverse_icons()
         self._load_saved_login()
+        saved_ds = self.settings.value("paths/dataset_dir", "", type=str)
+        if saved_ds and Path(saved_ds).is_dir():
+            self.txt_dl_folder.setText(saved_ds)
+            self._sync_dataset_paths(Path(saved_ds), save=False)
 
     # -----------------------------------------------------------------
     # Desktop sizing & styling helpers
@@ -1168,7 +1172,7 @@ class MainWindow(QMainWindow):
         btn_browse_dl = QPushButton("Browse...")
         btn_browse_dl.setIcon(get_svg_icon("folder", 16))
         btn_browse_dl.setIconSize(QSize(16, 16))
-        btn_browse_dl.clicked.connect(lambda: self._browse_folder(self.txt_dl_folder))
+        btn_browse_dl.clicked.connect(lambda: (self._browse_folder(self.txt_dl_folder), self._on_dataset_folder_edited()))
         dl_layout.addWidget(btn_browse_dl)
 
         self.btn_download_tasks = QPushButton("Download && Merge Selected (COCO 1.0)")
@@ -1188,13 +1192,13 @@ class MainWindow(QMainWindow):
         self.lbl_leftover = QLabel("")
         self.lbl_leftover.setWordWrap(True)
         lo.addWidget(self.lbl_leftover, 1)
-        self.btn_clean_leftover = QPushButton("Remove Task Folders")
+        self.btn_clean_leftover = QPushButton("Clean Up")
         self.btn_clean_leftover.setProperty("class", "DangerButton")
         self.btn_clean_leftover.clicked.connect(self._on_clean_leftover_tasks)
         lo.addWidget(self.btn_clean_leftover)
         self.leftover_row.hide()
         layout.insertWidget(layout.indexOf(self.tbl_tasks), self.leftover_row)   # above the table, always visible
-        self.txt_dl_folder.textChanged.connect(lambda _: self._refresh_leftover_tasks())
+        self.txt_dl_folder.editingFinished.connect(self._on_dataset_folder_edited)
 
         # Progress & Status
         self.prog_dl = QProgressBar()
@@ -2307,29 +2311,69 @@ class MainWindow(QMainWindow):
         self.active_worker.error_signal.connect(self._on_download_error)
         self.active_worker.start()
 
+    def _sync_dataset_paths(self, ds: Path, save: bool = True):
+        """Point Convert / Split / Train at <dataset>/annotations, images, labels and data.yaml."""
+        ds = Path(ds)
+        self.txt_conv_json.setText(str(ds / "annotations" / "instances_default.json"))
+        self.txt_conv_labels_dst.setText(str(ds / "labels"))
+        self.txt_split_img_src.setText(str(ds / "images"))
+        self.txt_split_lbl_src.setText(str(ds / "labels"))
+        self.txt_split_dst.setText(str(ds))
+        self.txt_data_yaml.setText(str(ds / "data.yaml"))
+        if save:
+            self.settings.setValue("paths/dataset_dir", str(ds))
+
+    def _on_dataset_folder_edited(self):
+        ds = Path(self.txt_dl_folder.text().strip())
+        if ds.is_dir():
+            self._sync_dataset_paths(ds)
+        self._refresh_leftover_tasks()
+
+    def _stray_label_files(self, ds: Path) -> list[Path]:
+        """YOLO .txt files sitting in the dataset root whose names match images/ (from a wrong Labels Output Folder)."""
+        img_dir = ds / "images"
+        if not img_dir.is_dir():
+            return []
+        try:
+            stems = {p.stem for p in img_dir.iterdir() if p.is_file()}
+            return sorted(p for p in ds.iterdir() if p.is_file() and p.suffix.lower() == ".txt" and p.stem in stems)
+        except OSError:
+            return []
+
     def _refresh_leftover_tasks(self):
         ds = Path(self.txt_dl_folder.text().strip())
         left = find_leftover_task_dirs(ds)
+        stray = self._stray_label_files(ds)
         has_merged = (ds / "annotations" / "instances_default.json").exists()
+        parts = []
         if left and has_merged:
-            self.lbl_leftover.setText(
-                f"⚠  {len(left)} per-task folders are still in {ds} (task_{left[0].name.split('_')[1]}_… ). "
-                f"The merged dataset (images/ + annotations/) is already there — these can be removed.")
+            parts.append(f"{len(left)} per-task folders (task_{left[0].name.split('_')[1]}_…)")
+        if stray:
+            parts.append(f"{len(stray)} label .txt files in the dataset root (they belong in labels/)")
+        if parts:
+            self.lbl_leftover.setText(f"⚠  Found in {ds}: " + " and ".join(parts) +
+                                      ". images/ and annotations/ are kept.")
+            self.btn_clean_leftover.setText("Clean Up")
             self.leftover_row.show()
         else:
             self.leftover_row.hide()
 
     def _on_clean_leftover_tasks(self):
         ds = Path(self.txt_dl_folder.text().strip())
-        left = find_leftover_task_dirs(ds)
-        if not left:
+        left = find_leftover_task_dirs(ds) if (ds / "annotations" / "instances_default.json").exists() else []
+        stray = self._stray_label_files(ds)
+        if not left and not stray:
             self.leftover_row.hide()
             return
+        lines = []
+        if left:
+            lines.append(f"• {len(left)} per-task folders: " + ", ".join(d.name for d in left[:4]) + (" …" if len(left) > 4 else ""))
+        if stray:
+            lines.append(f"• {len(stray)} label .txt files in the dataset root (e.g. {stray[0].name}) — "
+                         f"run COCO → YOLO again to recreate them in labels/")
         ans = QMessageBox.question(
-            self, "Remove Task Folders",
-            f"Delete {len(left)} per-task folders from:\n{ds}\n\n"
-            + "\n".join(d.name for d in left[:8]) + ("\n…" if len(left) > 8 else "")
-            + "\n\nimages/ and annotations/ (the merged dataset) are kept.",
+            self, "Clean Up Dataset Folder",
+            f"Delete from {ds}:\n\n" + "\n".join(lines) + "\n\nimages/ and annotations/ (the merged dataset) are kept.",
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         if ans != QMessageBox.Yes:
             return
@@ -2339,11 +2383,17 @@ class MainWindow(QMainWindow):
                 shutil.rmtree(d)
             except Exception as e:
                 failed.append(f"{d.name}: {e}")
+        for f in stray:
+            try:
+                f.unlink()
+            except Exception as e:
+                failed.append(f"{f.name}: {e}")
         self._refresh_leftover_tasks()
         if failed:
             QMessageBox.warning(self, "Some Folders Not Removed", "\n".join(failed[:10]))
         else:
-            self.notify.add("success", "Task folders removed", f"{len(left)} folders deleted from {ds}",
+            self.notify.add("success", "Dataset folder cleaned",
+                            f"{len(left)} task folders and {len(stray)} stray label files deleted from {ds}",
                             {"type": "folder", "path": str(ds)}, toast=False)
 
     def _on_download_progress(self, cur: int, tot: int, desc: str):
@@ -2364,8 +2414,7 @@ class MainWindow(QMainWindow):
 
         # next steps read the merged dataset
         ds = Path(stats.get("dataset_dir", self.txt_dl_folder.text().strip()))
-        self.txt_conv_json.setText(str(ds / "annotations" / "instances_default.json"))
-        self.txt_split_img_src.setText(str(ds / "images"))
+        self._sync_dataset_paths(ds)
         self.last_class_names = None   # converter will report the new class list
 
         self._refresh_leftover_tasks()
@@ -2411,6 +2460,21 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "File Not Found", f"COCO JSON file not found:\n{json_path}")
             return
 
+        # A dataset root (has images/ or annotations/) is the wrong place for thousands of .txt files
+        if (labels_dst / "images").is_dir() or (labels_dst / "annotations").is_dir() \
+                or labels_dst.resolve() == json_path.parent.parent.resolve():
+            fixed = labels_dst / "labels"
+            ans = QMessageBox.question(
+                self, "Labels Folder",
+                f"{labels_dst}\nis the dataset folder itself — writing every label .txt there would mix them "
+                f"with images/ and annotations/.\n\nSave labels to:\n{fixed}\ninstead?",
+                QMessageBox.Yes | QMessageBox.Cancel, QMessageBox.Yes)
+            if ans != QMessageBox.Yes:
+                return
+            labels_dst = fixed
+            self.txt_conv_labels_dst.setText(str(fixed))
+            self.txt_split_lbl_src.setText(str(fixed))
+
         self.btn_run_convert.setEnabled(False)
         self.prog_convert.setValue(0)
         self.lbl_conv_stats.setText(f"Converting in [{mode.upper()}] mode...")
@@ -2425,6 +2489,7 @@ class MainWindow(QMainWindow):
     def _on_convert_finished(self, stats: dict):
         self.btn_run_convert.setEnabled(True)
         self.studio_mascot.set_state(DancingSvgMascot.STATE_SUCCESS)
+        self.prog_convert.setMaximum(100)   # max was the image count during conversion
         self.prog_convert.setValue(100)
 
         self.last_class_names = list(stats.get("classes") or []) or None
@@ -2562,6 +2627,7 @@ class MainWindow(QMainWindow):
     def _on_split_finished(self, stats: dict):
         self.btn_run_split.setEnabled(True)
         self.studio_mascot.set_state(DancingSvgMascot.STATE_SUCCESS)
+        self.prog_split.setMaximum(100)
         self.prog_split.setValue(100)
 
         summary = (
