@@ -162,6 +162,12 @@ class CocoDatasetMerger:
                 if not src_path.exists():
                     src_path = img_dir / clean_name
                 if not src_path.exists():
+                    # dataset already split in place: images/{train,val,test}/<name>
+                    for sub in ("train", "val", "test"):
+                        if (img_dir / sub / clean_name).exists():
+                            src_path = img_dir / sub / clean_name
+                            break
+                if not src_path.exists():
                     raise FileNotFoundError(f"Missing image file: {src_path}")
 
                 target_name = self.unique_name(src_path, clean_name)

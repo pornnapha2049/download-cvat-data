@@ -37,6 +37,7 @@ from core.cvat_client import CvatClientWrapper, sanitize_filename
 from core.merger import CocoDatasetMerger
 from core.converter import CocoToYoloConverter
 from core.splitter import DatasetSplitter
+from core.layout import DatasetLayout
 from core.trainer import YoloTrainerEngine, auto_tune_hyperparameters, get_next_run_version, resolve_model_path
 from core.tester import YoloTestEngine, IMAGE_EXTS, VIDEO_EXTS
 from core.evaluator import (
@@ -192,55 +193,50 @@ class CvatDownloadWorker(QThread):
 
 
 class ConvertWorker(QThread):
+    """COCO -> YOLO into <data>/labels/. Old labels are removed first; if the images were
+    already split, each label is moved to labels/<split>/ next to its image."""
     progress_signal = pyqtSignal(int, int, str)
     finished_signal = pyqtSignal(dict)
     error_signal = pyqtSignal(str)
 
-    def __init__(self, converter: CocoToYoloConverter, coco_json: Path, out_labels: Path, mode: str):
+    def __init__(self, converter: CocoToYoloConverter, dataset_dir: Path, mode: str):
         super().__init__()
         self.converter = converter
-        self.coco_json = coco_json
-        self.out_labels = out_labels
+        self.layout = DatasetLayout(dataset_dir)
         self.mode = mode
 
     def run(self):
         try:
+            lay = self.layout
+            if not lay.coco_json.exists():
+                raise FileNotFoundError(f"COCO annotations not found:\n{lay.coco_json}\nDownload data first (Step 1).")
+            removed = lay.clear_labels()
+
             def cb(cur, tot, desc):
                 self.progress_signal.emit(cur, tot, desc)
 
-            stats = self.converter.convert(
-                self.coco_json, self.out_labels, mode=self.mode, progress_callback=cb
-            )
+            stats = self.converter.convert(lay.coco_json, lay.labels, mode=self.mode, progress_callback=cb)
+            stats["old_labels_removed"] = removed
+            stats["moved_into_splits"] = lay.place_labels_next_to_images()
+            stats["already_split"] = lay.is_split()
             self.finished_signal.emit(stats)
         except Exception as e:
             self.error_signal.emit(str(e))
 
 
 class SplitWorker(QThread):
+    """Moves images/labels inside <data> into images|labels/{train,val,test} and writes data.yaml."""
     progress_signal = pyqtSignal(int, int, str)
     finished_signal = pyqtSignal(dict)
     error_signal = pyqtSignal(str)
 
-    def __init__(
-        self,
-        splitter: DatasetSplitter,
-        img_dir: Path,
-        lbl_dir: Path,
-        out_dir: Path,
-        ratios: tuple[float, float, float],
-        copy_mode: bool,
-        class_names: list[str] | None = None,
-        coco_json: Path | None = None,
-    ):
+    def __init__(self, splitter: DatasetSplitter, dataset_dir: Path, ratios: tuple[float, float, float],
+                 class_names: list[str] | None = None):
         super().__init__()
-        self.class_names = class_names
-        self.coco_json = coco_json
         self.splitter = splitter
-        self.img_dir = img_dir
-        self.lbl_dir = lbl_dir
-        self.out_dir = out_dir
+        self.dataset_dir = Path(dataset_dir)
         self.ratios = ratios
-        self.copy_mode = copy_mode
+        self.class_names = class_names
 
     def run(self):
         try:
@@ -248,18 +244,9 @@ class SplitWorker(QThread):
                 self.progress_signal.emit(cur, tot, desc)
 
             r_train, r_val, r_test = self.ratios
-            stats = self.splitter.split_dataset(
-                images_dir=self.img_dir,
-                labels_dir=self.lbl_dir,
-                output_dataset_dir=self.out_dir,
-                coco_json_path=self.coco_json,
-                train_ratio=r_train,
-                val_ratio=r_val,
-                test_ratio=r_test,
-                class_names=self.class_names,
-                copy_files=self.copy_mode,
-                progress_callback=cb
-            )
+            stats = self.splitter.split_in_place(
+                self.dataset_dir, train_ratio=r_train, val_ratio=r_val, test_ratio=r_test,
+                class_names=self.class_names, progress_callback=cb)
             self.finished_signal.emit(stats)
         except Exception as e:
             self.error_signal.emit(str(e))
@@ -470,11 +457,9 @@ class MainWindow(QMainWindow):
         # Single Unified Data Folder Architecture
         self.app_dir = Path("C:/Articulus/cvat").resolve()
         self.data_dir = self.app_dir / "data"
-        self.runs_dir = self.app_dir / "runs"
         self.models_dir = self.app_dir / "models"   # base weights (yolo11n.pt, yolo26x.pt …) are kept here
-        self.test_results_dir = self.data_dir / "test_results"
 
-        for d in [self.data_dir, self.runs_dir, self.test_results_dir, self.models_dir]:
+        for d in [self.data_dir, self.models_dir]:
             d.mkdir(parents=True, exist_ok=True)
 
         # State Engines
@@ -505,7 +490,7 @@ class MainWindow(QMainWindow):
         saved_ds = self.settings.value("paths/dataset_dir", "", type=str)
         if saved_ds and Path(saved_ds).is_dir():
             self.txt_dl_folder.setText(saved_ds)
-            self._sync_dataset_paths(Path(saved_ds), save=False)
+        self._sync_dataset_paths(self._ds().root, save=False)
 
     # -----------------------------------------------------------------
     # Desktop sizing & styling helpers
@@ -969,7 +954,7 @@ class MainWindow(QMainWindow):
         btn_data.setIcon(get_svg_icon("folder", 16))
         btn_data.setIconSize(QSize(16, 16))
         btn_data.setCursor(Qt.PointingHandCursor)
-        btn_data.clicked.connect(lambda: self._open_dir(self.data_dir))
+        btn_data.clicked.connect(lambda: self._open_dir(self._ds().root))
         layout.addWidget(btn_data)
 
         btn_logout = QPushButton("Logout")
@@ -1307,27 +1292,7 @@ class MainWindow(QMainWindow):
         cp_layout.setContentsMargins(18, 16, 18, 16)
         cp_layout.setSpacing(12)
 
-        row_json = QHBoxLayout()
-        row_json.addWidget(QLabel("COCO JSON File:"))
-        self.txt_conv_json = QLineEdit(str(self.data_dir / "annotations" / "instances_default.json"))
-        row_json.addWidget(self.txt_conv_json, stretch=1)
-        btn_json = QPushButton("Browse...")
-        btn_json.setIcon(get_svg_icon("folder", 16))
-        btn_json.setIconSize(QSize(16, 16))
-        btn_json.clicked.connect(lambda: self._browse_file(self.txt_conv_json, "JSON Files (*.json)"))
-        row_json.addWidget(btn_json)
-        cp_layout.addLayout(row_json)
-
-        row_lbl_dst = QHBoxLayout()
-        row_lbl_dst.addWidget(QLabel("Labels Output Folder:"))
-        self.txt_conv_labels_dst = QLineEdit(str(self.data_dir / "labels"))
-        row_lbl_dst.addWidget(self.txt_conv_labels_dst, stretch=1)
-        btn_lbl_dst = QPushButton("Browse...")
-        btn_lbl_dst.setIcon(get_svg_icon("folder", 16))
-        btn_lbl_dst.setIconSize(QSize(16, 16))
-        btn_lbl_dst.clicked.connect(lambda: self._browse_folder(self.txt_conv_labels_dst))
-        row_lbl_dst.addWidget(btn_lbl_dst)
-        cp_layout.addLayout(row_lbl_dst)
+        cp_layout.addWidget(self._make_data_info("convert"))
 
         self.btn_run_convert = QPushButton("Convert COCO to YOLO (.txt)")
         self.btn_run_convert.setProperty("class", "SuccessButton")
@@ -1359,42 +1324,7 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(14)
 
-        # Paths Card
-        paths_card = QFrame()
-        paths_card.setProperty("class", "CardFrame")
-        box_paths_layout = QGridLayout(paths_card)
-        box_paths_layout.setContentsMargins(18, 16, 18, 16)
-        box_paths_layout.setHorizontalSpacing(12)
-        box_paths_layout.setVerticalSpacing(10)
-
-        box_paths_layout.addWidget(QLabel("Images Source Folder:"), 0, 0)
-        self.txt_split_img_src = QLineEdit(str(self.data_dir / "images"))
-        box_paths_layout.addWidget(self.txt_split_img_src, 0, 1)
-        btn_img_src = QPushButton("Browse...")
-        btn_img_src.setIcon(get_svg_icon("folder", 16))
-        btn_img_src.setIconSize(QSize(16, 16))
-        btn_img_src.clicked.connect(lambda: self._browse_folder(self.txt_split_img_src))
-        box_paths_layout.addWidget(btn_img_src, 0, 2)
-
-        box_paths_layout.addWidget(QLabel("Labels Source Folder:"), 1, 0)
-        self.txt_split_lbl_src = QLineEdit(str(self.data_dir / "labels"))
-        box_paths_layout.addWidget(self.txt_split_lbl_src, 1, 1)
-        btn_lbl_src = QPushButton("Browse...")
-        btn_lbl_src.setIcon(get_svg_icon("folder", 16))
-        btn_lbl_src.setIconSize(QSize(16, 16))
-        btn_lbl_src.clicked.connect(lambda: self._browse_folder(self.txt_split_lbl_src))
-        box_paths_layout.addWidget(btn_lbl_src, 1, 2)
-
-        box_paths_layout.addWidget(QLabel("Split Dataset Destination:"), 2, 0)
-        self.txt_split_dst = QLineEdit(str(self.data_dir))
-        box_paths_layout.addWidget(self.txt_split_dst, 2, 1)
-        btn_split_dst = QPushButton("Browse...")
-        btn_split_dst.setIcon(get_svg_icon("folder", 16))
-        btn_split_dst.setIconSize(QSize(16, 16))
-        btn_split_dst.clicked.connect(lambda: self._browse_folder(self.txt_split_dst))
-        box_paths_layout.addWidget(btn_split_dst, 2, 2)
-
-        layout.addWidget(paths_card)
+        layout.addWidget(self._make_data_info("split", card=True))
 
         # Ratios Card
         ratios_card = QFrame()
@@ -1452,12 +1382,12 @@ class MainWindow(QMainWindow):
         self.lbl_ratio_total = QLabel("")
         self.lbl_ratio_total.setProperty("class", "StatText")
         box_ratios_layout.addWidget(self.lbl_ratio_total, 3, 0, 1, 3)
-        self.txt_split_img_src.textChanged.connect(lambda _: self._update_ratio_summary())
 
-        self.chk_all_images = QCheckBox("Include ALL images in dataset (background images without annotations receive empty label files)")
-        self.chk_all_images.setChecked(True)
-        self.chk_all_images.setEnabled(False)
-        box_ratios_layout.addWidget(self.chk_all_images, 4, 0, 1, 3)
+        note = QLabel("All images are used: images without objects get an empty label (background). "
+                      "Files are moved inside the data folder — running Split again re-shuffles with the new ratios.")
+        note.setWordWrap(True)
+        note.setProperty("class", "MutedText")
+        box_ratios_layout.addWidget(note, 4, 0, 1, 3)
         self._update_ratio_summary()
 
         self.btn_run_split = QPushButton("Split Dataset && Generate data.yaml")
@@ -1535,12 +1465,14 @@ class MainWindow(QMainWindow):
 
         h_layout.addWidget(QLabel("data.yaml Path:"), 1, 0)
         self.txt_data_yaml = QLineEdit(str(self.data_dir / "data.yaml"))
+        self.txt_data_yaml.setReadOnly(True)
+        self.txt_data_yaml.setToolTip("Fixed: <data folder>/data.yaml (written by Dataset Splitter). Change the data folder in Step 1.")
         h_layout.addWidget(self.txt_data_yaml, 1, 1, 1, 5)
-        btn_browse_yaml = QPushButton("Browse...")
-        btn_browse_yaml.setIcon(get_svg_icon("folder", 16))
-        btn_browse_yaml.setIconSize(QSize(16, 16))
-        btn_browse_yaml.clicked.connect(self._browse_data_yaml)
-        h_layout.addWidget(btn_browse_yaml, 1, 6)
+        btn_open_data = QPushButton("Open")
+        btn_open_data.setIcon(get_svg_icon("folder", 16))
+        btn_open_data.setIconSize(QSize(16, 16))
+        btn_open_data.clicked.connect(lambda: self._open_dir(self._ds().root))
+        h_layout.addWidget(btn_open_data, 1, 6)
 
         self.btn_auto_tune = QPushButton("Auto-Tune Hyperparameters for Dataset")
         self.btn_auto_tune.setProperty("class", "SuccessButton")
@@ -1593,12 +1525,14 @@ class MainWindow(QMainWindow):
         h_layout.addWidget(self.txt_custom_run_name, 5, 1, 1, 2)
 
         h_layout.addWidget(QLabel("Runs Folder:"), 5, 3)
-        self.txt_runs_base = QLineEdit(str(self.runs_dir))
+        self.txt_runs_base = QLineEdit(str(self.data_dir / "runs"))
+        self.txt_runs_base.setReadOnly(True)
+        self.txt_runs_base.setToolTip("Fixed: <data folder>/runs")
         h_layout.addWidget(self.txt_runs_base, 5, 4, 1, 2)
-        btn_runs_base = QPushButton("Browse...")
+        btn_runs_base = QPushButton("Open")
         btn_runs_base.setIcon(get_svg_icon("folder", 16))
         btn_runs_base.setIconSize(QSize(16, 16))
-        btn_runs_base.clicked.connect(lambda: self._browse_folder(self.txt_runs_base))
+        btn_runs_base.clicked.connect(lambda: self._open_dir(self._ds().runs))
         h_layout.addWidget(btn_runs_base, 5, 6)
 
         # Output preview notice (In-place weights renaming inside runs/)
@@ -1798,13 +1732,10 @@ class MainWindow(QMainWindow):
         self.chk_save_test.setStyleSheet("font-weight: 700; color: #0e4b5a;")
         cg_layout.addWidget(self.chk_save_test, 4, 0)
 
-        self.txt_test_save_dir = QLineEdit(str(self.test_results_dir))
-        cg_layout.addWidget(self.txt_test_save_dir, 4, 1, 1, 4)
-        btn_browse_save_dir = QPushButton("Browse...")
-        btn_browse_save_dir.setIcon(get_svg_icon("folder", 16))
-        btn_browse_save_dir.setIconSize(QSize(16, 16))
-        btn_browse_save_dir.clicked.connect(lambda: self._browse_folder(self.txt_test_save_dir))
-        cg_layout.addWidget(btn_browse_save_dir, 4, 5)
+        self.txt_test_save_dir = QLineEdit(str(self.data_dir / "runs" / "test"))
+        self.txt_test_save_dir.setReadOnly(True)
+        self.txt_test_save_dir.setToolTip("Fixed: <data folder>/runs/test")
+        cg_layout.addWidget(self.txt_test_save_dir, 4, 1, 1, 5)
 
         # Action Buttons
         act_row = QHBoxLayout()
@@ -1958,6 +1889,9 @@ class MainWindow(QMainWindow):
             return
 
         self.pages.setCurrentIndex(step_idx)
+        if step_idx != self.STEP_DOWNLOAD:
+            self._sync_dataset_paths(self._ds().root, save=False)   # files may have changed outside the app
+            self._refresh_yaml_preview()
 
         # Update Stepper Buttons active style
         for idx, btn in enumerate(self.step_buttons):
@@ -2313,15 +2247,15 @@ class MainWindow(QMainWindow):
 
     def _sync_dataset_paths(self, ds: Path, save: bool = True):
         """Point Convert / Split / Train at <dataset>/annotations, images, labels and data.yaml."""
-        ds = Path(ds)
-        self.txt_conv_json.setText(str(ds / "annotations" / "instances_default.json"))
-        self.txt_conv_labels_dst.setText(str(ds / "labels"))
-        self.txt_split_img_src.setText(str(ds / "images"))
-        self.txt_split_lbl_src.setText(str(ds / "labels"))
-        self.txt_split_dst.setText(str(ds))
-        self.txt_data_yaml.setText(str(ds / "data.yaml"))
+        lay = DatasetLayout(ds)
+        self.txt_data_yaml.setText(str(lay.data_yaml))
+        self.txt_runs_base.setText(str(lay.runs))
+        self.txt_test_save_dir.setText(str(lay.test_runs))
         if save:
-            self.settings.setValue("paths/dataset_dir", str(ds))
+            self.settings.setValue("paths/dataset_dir", str(lay.root))
+        self._refresh_data_info()
+        if hasattr(self, "lbl_run_preview"):
+            self._update_run_preview()
 
     def _on_dataset_folder_edited(self):
         ds = Path(self.txt_dl_folder.text().strip())
@@ -2331,11 +2265,10 @@ class MainWindow(QMainWindow):
 
     def _stray_label_files(self, ds: Path) -> list[Path]:
         """YOLO .txt files sitting in the dataset root whose names match images/ (from a wrong Labels Output Folder)."""
-        img_dir = ds / "images"
-        if not img_dir.is_dir():
+        if not (ds / "images").is_dir():
             return []
         try:
-            stems = {p.stem for p in img_dir.iterdir() if p.is_file()}
+            stems = {Path(n).stem for n in DatasetLayout(ds).image_locations()}
             return sorted(p for p in ds.iterdir() if p.is_file() and p.suffix.lower() == ".txt" and p.stem in stems)
         except OSError:
             return []
@@ -2421,8 +2354,9 @@ class MainWindow(QMainWindow):
         self.notify.add("success", "Download & merge finished", summary, {"type": "folder", "path": str(ds)})
         QMessageBox.information(
             self, "Download & Merge Finished",
-            f"{summary}\n\nDataset: {ds}\n  images/  +  annotations/instances_default.json\n\n"
-            f"Per-task folders were removed. Next: COCO → YOLO.")
+            f"{summary}\n\nData folder: {ds}\n  images/  +  annotations/instances_default.json\n\n"
+            f"Per-task folders were removed. labels/ and data.yaml were reset (runs/ is kept).\n"
+            f"Next: COCO → YOLO, then Split.")
 
     def _on_download_error(self, err_msg: str):
         self.notify.add("error", "Download / merge failed", err_msg[:300])
@@ -2451,37 +2385,96 @@ class MainWindow(QMainWindow):
         if hasattr(self, "cmb_train_task") and self.cmb_train_task.currentText() != mode:
             self.cmb_train_task.setCurrentText(mode)   # training task must match the label format
 
-    def _on_run_convert(self):
-        json_path = Path(self.txt_conv_json.text().strip())
-        labels_dst = Path(self.txt_conv_labels_dst.text().strip())
-        mode = "detect" if self.rb_mode_det.isChecked() else "segment"
+    def _ds(self) -> DatasetLayout:
+        """The one data folder chosen in Step 1; every step reads/writes inside it."""
+        return DatasetLayout(Path(self.txt_dl_folder.text().strip() or str(self.data_dir)))
 
-        if not json_path.exists():
-            QMessageBox.warning(self, "File Not Found", f"COCO JSON file not found:\n{json_path}")
+    def _make_data_info(self, step: str, card: bool = False) -> QWidget:
+        """Read-only box showing where this step reads and writes (all inside the Step 1 folder)."""
+        box = QFrame()
+        if card:
+            box.setProperty("class", "CardFrame")
+        lay = QHBoxLayout(box)
+        lay.setContentsMargins(18, 14, 18, 14) if card else lay.setContentsMargins(0, 0, 0, 0)
+        lbl = QLabel()
+        lbl.setTextFormat(Qt.RichText)
+        lbl.setWordWrap(True)
+        lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        lay.addWidget(lbl, 1)
+        btn = QPushButton("Open Data Folder")
+        btn.setIcon(get_svg_icon("folder", 16))
+        btn.setIconSize(QSize(16, 16))
+        btn.clicked.connect(lambda: self._open_dir(self._ds().root))
+        lay.addWidget(btn, 0, Qt.AlignTop)
+        if not hasattr(self, "_data_info_labels"):
+            self._data_info_labels = {}
+        self._data_info_labels[step] = lbl
+        return box
+
+    def _refresh_data_info(self):
+        labels = getattr(self, "_data_info_labels", {})
+        if not labels:
             return
+        lay = self._ds()
+        try:
+            c = lay.counts()
+            n_lbl = len(lay.label_files())
+        except OSError:
+            c, n_lbl = {"images": 0, "flat": 0, "labelled": 0, "train": 0, "val": 0, "test": 0}, 0
+        ok, bad = "#2e7d4f", "#b3261e"
 
-        # A dataset root (has images/ or annotations/) is the wrong place for thousands of .txt files
-        if (labels_dst / "images").is_dir() or (labels_dst / "annotations").is_dir() \
-                or labels_dst.resolve() == json_path.parent.parent.resolve():
-            fixed = labels_dst / "labels"
+        def row(name, path, state, good):
+            col = ok if good else bad
+            return (f"<tr><td style='padding-right:14px'><b>{name}</b></td>"
+                    f"<td style='padding-right:14px'>{path}</td><td style='color:{col}'>{state}</td></tr>")
+
+        root = lay.root.as_posix()
+        split_txt = (f"split: train {c['train']} · val {c['val']} · test {c['test']}"
+                     if lay.is_split() else "not split yet")
+        img_row = row("images/", f"{root}/images", f"{c['images']} images, {split_txt}", c["images"] > 0)
+        json_row = row("annotations/", f"{root}/annotations/instances_default.json",
+                       "found" if lay.coco_json.exists() else "missing — download in Step 1", lay.coco_json.exists())
+        lbl_row = row("labels/", f"{root}/labels",
+                      f"{n_lbl} label files" if n_lbl else "empty — run COCO to YOLO", n_lbl > 0)
+        yaml_row = row("data.yaml", f"{root}/data.yaml",
+                       "found" if lay.data_yaml.exists() else "not created yet — run Split", lay.data_yaml.exists())
+        head = f"<div style='margin-bottom:4px'>Data folder (chosen in Step 1): <b>{root}</b></div>"
+        tables = {
+            "convert": [json_row, img_row, lbl_row],
+            "split": [img_row, lbl_row, yaml_row],
+        }
+        for step, lbl in labels.items():
+            rows = "".join(tables.get(step, []))
+            lbl.setText(head + f"<table cellspacing='0' cellpadding='2'>{rows}</table>")
+        if hasattr(self, "_split_img_count_cache"):
+            self._split_img_count_cache = None
+            self._update_ratio_summary()
+
+    def _on_run_convert(self):
+        lay = self._ds()
+        mode = "detect" if self.rb_mode_det.isChecked() else "segment"
+        if not lay.coco_json.exists():
+            QMessageBox.warning(self, "Annotations Not Found",
+                                f"COCO annotations not found:\n{lay.coco_json}\n\nDownload data in Step 1 first.")
+            return
+        n_old = len(lay.label_files())
+        if n_old:
             ans = QMessageBox.question(
-                self, "Labels Folder",
-                f"{labels_dst}\nis the dataset folder itself — writing every label .txt there would mix them "
-                f"with images/ and annotations/.\n\nSave labels to:\n{fixed}\ninstead?",
+                self, "Replace Labels",
+                f"labels/ already has {n_old} label files.\nThey will be deleted and created again in "
+                f"[{mode.upper()}] mode.\n\nContinue?",
                 QMessageBox.Yes | QMessageBox.Cancel, QMessageBox.Yes)
             if ans != QMessageBox.Yes:
                 return
-            labels_dst = fixed
-            self.txt_conv_labels_dst.setText(str(fixed))
-            self.txt_split_lbl_src.setText(str(fixed))
 
         self.btn_run_convert.setEnabled(False)
+        self.prog_convert.setMaximum(100)
         self.prog_convert.setValue(0)
         self.lbl_conv_stats.setText(f"Converting in [{mode.upper()}] mode...")
         self.studio_mascot.set_state(DancingSvgMascot.STATE_DOWNLOADING)
 
-        self.active_worker = ConvertWorker(self.converter_engine, json_path, labels_dst, mode)
-        self.active_worker.progress_signal.connect(lambda c, t, d: (self.prog_convert.setMaximum(t), self.prog_convert.setValue(c), self.lbl_conv_stats.setText(d)))
+        self.active_worker = ConvertWorker(self.converter_engine, lay.root, mode)
+        self.active_worker.progress_signal.connect(lambda c, t, d: (self.prog_convert.setMaximum(max(t, 1)), self.prog_convert.setValue(c), self.lbl_conv_stats.setText(d)))
         self.active_worker.finished_signal.connect(self._on_convert_finished)
         self.active_worker.error_signal.connect(self._on_convert_error)
         self.active_worker.start()
@@ -2500,10 +2493,13 @@ class MainWindow(QMainWindow):
             f"Classes ({stats.get('num_classes', 0)}): {', '.join(stats.get('classes', []))} | "
             f"Mode: {stats.get('mode', 'unknown')}"
         )
+        if stats.get("already_split"):
+            summary += f" | Labels placed in labels/train|val|test ({stats.get('moved_into_splits', 0)})"
         self.lbl_conv_stats.setText(summary)
-        self.notify.add("success", "COCO → YOLO finished", summary,
-                        {"type": "folder", "path": self.txt_conv_labels_dst.text().strip()})
-        QMessageBox.information(self, "Conversion Complete", f"COCO to YOLO Conversion Completed!\n\n{summary}\nOutput: {self.txt_conv_labels_dst.text()}")
+        out = self._ds().labels
+        self.notify.add("success", "COCO → YOLO finished", summary, {"type": "folder", "path": str(out)})
+        self._refresh_data_info()
+        QMessageBox.information(self, "Conversion Complete", f"COCO to YOLO Conversion Completed!\n\n{summary}\nOutput: {out}")
 
     def _on_convert_error(self, err_msg: str):
         self.notify.add("error", "Conversion failed", err_msg[:300])
@@ -2572,10 +2568,10 @@ class MainWindow(QMainWindow):
         """Shows the total and how many images each split will get (same rounding as the splitter)."""
         t, v, te = self.spin_train.value(), self.spin_val.value(), self.spin_test.value()
         total = t + v + te
-        src = self.txt_split_img_src.text().strip()
+        src = str(self._ds().root) if hasattr(self, "txt_dl_folder") else ""
         if not self._split_img_count_cache or self._split_img_count_cache[0] != src:
             try:
-                n_imgs = sum(1 for f in Path(src).iterdir() if f.is_file() and f.suffix.lower() in IMAGE_EXTS)
+                n_imgs = len(self._ds().image_locations()) if src else 0
             except Exception:
                 n_imgs = 0
             self._split_img_count_cache = (src, n_imgs)
@@ -2591,35 +2587,39 @@ class MainWindow(QMainWindow):
         self.lbl_ratio_total.setText(text)
 
     def _on_run_split(self):
-        img_src = Path(self.txt_split_img_src.text().strip())
-        lbl_src = Path(self.txt_split_lbl_src.text().strip())
-        dst = Path(self.txt_split_dst.text().strip())
-
-        if not img_src.exists():
-            QMessageBox.warning(self, "Images Not Found", f"Images directory not found:\n{img_src}")
+        lay = self._ds()
+        if not lay.image_locations():
+            QMessageBox.warning(self, "Images Not Found", f"No images in:\n{lay.images}\n\nDownload data in Step 1 first.")
+            return
+        if not lay.label_files():
+            QMessageBox.warning(self, "Labels Not Found", f"No YOLO labels in:\n{lay.labels}\n\nRun COCO to YOLO first.")
             return
 
         r_train = self.spin_train.value() / 100.0
         r_val = self.spin_val.value() / 100.0
         r_test = self.spin_test.value() / 100.0
         total_r = r_train + r_val + r_test
-
         if abs(total_r - 1.0) > 0.01:
             QMessageBox.warning(self, "Invalid Ratios", f"Train + Val + Test ratios must sum to 100% (currently {int(total_r*100)}%).")
             return
+        if lay.is_split():
+            ans = QMessageBox.question(
+                self, "Split Again",
+                "This data folder is already split.\nAll images will be re-shuffled into train/val/test with the "
+                f"new ratios ({self.spin_train.value()}/{self.spin_val.value()}/{self.spin_test.value()}).\n\nContinue?",
+                QMessageBox.Yes | QMessageBox.Cancel, QMessageBox.Yes)
+            if ans != QMessageBox.Yes:
+                return
 
         self.btn_run_split.setEnabled(False)
+        self.prog_split.setMaximum(100)
         self.prog_split.setValue(0)
-        self.lbl_split_stats.setText("Partitioning dataset (100% images included)...")
+        self.lbl_split_stats.setText("Splitting dataset in place (all images included)...")
         self.studio_mascot.set_state(DancingSvgMascot.STATE_DOWNLOADING)
 
-        coco_json = Path(self.txt_conv_json.text().strip())
-        self.active_worker = SplitWorker(
-            self.splitter_engine, img_src, lbl_src, dst, (r_train, r_val, r_test), copy_mode=True,
-            class_names=self.last_class_names,
-            coco_json=coco_json if coco_json.exists() else None,
-        )
-        self.active_worker.progress_signal.connect(lambda c, t, d: (self.prog_split.setMaximum(t), self.prog_split.setValue(c), self.lbl_split_stats.setText(d)))
+        # class names always come from the COCO file -> same ids the converter wrote
+        self.active_worker = SplitWorker(self.splitter_engine, lay.root, (r_train, r_val, r_test))
+        self.active_worker.progress_signal.connect(lambda c, t, d: (self.prog_split.setMaximum(max(t, 1)), self.prog_split.setValue(c), self.lbl_split_stats.setText(d)))
         self.active_worker.finished_signal.connect(self._on_split_finished)
         self.active_worker.error_signal.connect(self._on_split_error)
         self.active_worker.start()
@@ -2640,9 +2640,11 @@ class MainWindow(QMainWindow):
         self.lbl_split_stats.setText(summary)
         self.notify.add("success", "Dataset split finished", summary,
                         {"type": "file", "path": str(stats.get("data_yaml_path", "")),
-                         "fallback": self.txt_split_dst.text().strip()})
+                         "fallback": str(self._ds().root)})
+        self.txt_data_yaml.setText(str(self._ds().data_yaml))
         self._refresh_yaml_preview()
-        QMessageBox.information(self, "Split Complete", f"Dataset Partition Completed!\n\n{summary}\nOutput: {self.txt_split_dst.text()}")
+        self._refresh_data_info()
+        QMessageBox.information(self, "Split Complete", f"Dataset Partition Completed!\n\n{summary}\nOutput: {self._ds().root}")
 
     def _on_split_error(self, err_msg: str):
         self.notify.add("error", "Split failed", err_msg[:300])
@@ -2706,7 +2708,7 @@ class MainWindow(QMainWindow):
         )
 
     def _on_auto_tune_clicked(self):
-        yaml_path = Path(self.txt_data_yaml.text().strip())
+        yaml_path = self._ds().data_yaml
         if not yaml_path.exists():
             QMessageBox.warning(self, "File Not Found", f"data.yaml not found at:\n{yaml_path}")
             return
@@ -2730,9 +2732,11 @@ class MainWindow(QMainWindow):
         )
 
     def _on_start_training(self):
-        yaml_path = Path(self.txt_data_yaml.text().strip())
+        yaml_path = self._ds().data_yaml
+        self.txt_data_yaml.setText(str(yaml_path))
         if not yaml_path.exists():
-            QMessageBox.warning(self, "Missing data.yaml", f"Cannot find dataset configuration at:\n{yaml_path}")
+            QMessageBox.warning(self, "Missing data.yaml",
+                                f"Cannot find dataset configuration at:\n{yaml_path}\n\nRun Dataset Splitter (Step 3) first.")
             return
 
         task = self.cmb_train_task.currentText()
@@ -2744,7 +2748,8 @@ class MainWindow(QMainWindow):
             return
         model_name = custom_pt if custom_pt else self.cmb_model_preset.currentText()
         run_name = self.txt_custom_run_name.text().strip() or "yolo_model"
-        base_runs_dir = Path(self.txt_runs_base.text().strip())
+        base_runs_dir = self._ds().runs
+        base_runs_dir.mkdir(parents=True, exist_ok=True)
 
         hyperparams = {
             "epochs": self.spin_epochs.value(),
@@ -2980,7 +2985,7 @@ class MainWindow(QMainWindow):
             "eval": ev,
         }
         try:
-            files = write_report_files(report, Path(ev.get("save_dir") or self.test_results_dir))
+            files = write_report_files(report, Path(ev.get("save_dir") or self._ds().test_runs))
             report["report_md"] = files["md"]
         except Exception:
             pass
@@ -3026,7 +3031,7 @@ class MainWindow(QMainWindow):
         elif idx == 3:
             self.lbl_test_src_path.setText("data.yaml Path:")
             self.txt_test_source.setPlaceholderText("data.yaml created in Step 3 (uses its test split)")
-            yaml_guess = self.txt_data_yaml.text().strip()
+            yaml_guess = str(self._ds().data_yaml)
             if yaml_guess and (not self.txt_test_source.text().strip().endswith((".yaml", ".yml"))):
                 self.txt_test_source.setText(yaml_guess)
         self.chk_eval_labels.setEnabled(idx in (0, 1))
@@ -3046,7 +3051,7 @@ class MainWindow(QMainWindow):
             if f:
                 self.txt_test_source.setText(f)
         elif idx == 3:
-            f, _ = QFileDialog.getOpenFileName(self, "Select data.yaml", str(self.data_dir), "YAML Files (*.yaml *.yml)")
+            f, _ = QFileDialog.getOpenFileName(self, "Select data.yaml", str(self._ds().root), "YAML Files (*.yaml *.yml)")
             if f:
                 self.txt_test_source.setText(f)
 
@@ -3054,7 +3059,9 @@ class MainWindow(QMainWindow):
         model_p = Path(self.txt_test_model.text().strip())
         src_p = Path(self.txt_test_source.text().strip())
         save_enabled = self.chk_save_test.isChecked()
-        save_dir = Path(self.txt_test_save_dir.text().strip())
+        save_dir = self._ds().test_runs
+        save_dir.mkdir(parents=True, exist_ok=True)
+        self.txt_test_save_dir.setText(str(save_dir))
 
         if not model_p.exists():
             QMessageBox.warning(self, "Model Not Found", f"Model weights not found:\n{model_p}")
@@ -3084,7 +3091,7 @@ class MainWindow(QMainWindow):
         evaluate = mode_str == "split" or (mode_str in ("image", "folder") and self.chk_eval_labels.isChecked())
         self.active_worker = TestInferenceWorker(
             self.tester_engine, mode_str, model_p, src_p, conf, iou, save_enabled, save_dir,
-            evaluate=evaluate, eval_dir=save_dir if save_dir.parent.exists() else self.test_results_dir,
+            evaluate=evaluate, eval_dir=save_dir,
         )
         self.active_worker.progress_signal.connect(self._on_test_progress)
         self.active_worker.frame_signal.connect(self._on_test_frame)
@@ -3305,7 +3312,7 @@ class MainWindow(QMainWindow):
             target_line_edit.setText(f)
 
     def _browse_model_pt(self):
-        start = str(self.models_dir if self.models_dir.exists() else self.runs_dir)
+        start = str(self.models_dir if self.models_dir.exists() else self._ds().runs)
         f, _ = QFileDialog.getOpenFileName(self, "Select YOLO Model Weights", start, "PyTorch Weights (*.pt)")
         if f:
             self.txt_custom_model.setText(f)

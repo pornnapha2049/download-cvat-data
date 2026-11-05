@@ -173,3 +173,107 @@ class DatasetSplitter:
             "data_yaml_path": data_yaml_path,
             "dataset_dir": output_dataset_dir,
         }
+
+    # ------------------------------------------------------------------------------------------
+    def split_in_place(
+        self,
+        dataset_dir: Path,
+        train_ratio: float = 0.70,
+        val_ratio: float = 0.20,
+        test_ratio: float = 0.10,
+        class_names: typing.Optional[list[str]] = None,
+        seed: int = 42,
+        progress_callback: typing.Optional[typing.Callable[[int, int, str], None]] = None,
+    ) -> dict:
+        """
+        Split the single data folder in place (files are moved, nothing is copied):
+            images/*.jpg or images/<old split>/*.jpg  ->  images/{train,val,test}/
+            labels/*.txt or labels/<old split>/*.txt  ->  labels/{train,val,test}/
+        Re-running it re-shuffles everything with the new ratios. Images without a label get an
+        empty label file (background). data.yaml is rewritten in the same folder.
+        """
+        from .layout import DatasetLayout, SPLITS
+
+        lay = DatasetLayout(dataset_dir)
+        locs = lay.image_locations()
+        if not locs:
+            raise FileNotFoundError(f"No images found in {lay.images}")
+
+        # each image's current label (wherever it is now)
+        current_label = {name: lay.label_for(p) for name, p in locs.items()}
+        if not any(l.exists() for l in current_label.values()):
+            raise FileNotFoundError(
+                f"No YOLO labels found in {lay.labels}\nRun 'COCO to YOLO' before splitting.")
+
+        total = train_ratio + val_ratio + test_ratio
+        if total <= 0:
+            train_ratio, val_ratio, test_ratio, total = 0.70, 0.20, 0.10, 1.0
+        r_train, r_val = train_ratio / total, val_ratio / total
+
+        names = sorted(locs)                 # stable order before shuffling -> reproducible
+        rnd = random.Random(seed)
+        rnd.shuffle(names)
+        n = len(names)
+        n_train = int(n * r_train)
+        n_val = int(n * r_val)
+        if r_val > 0 and n_val == 0 and n >= 2:
+            n_val = 1
+            if n_train > 1:
+                n_train -= 1
+        n_test = n - n_train - n_val
+
+        for s in SPLITS:
+            (lay.images / s).mkdir(parents=True, exist_ok=True)
+            (lay.labels / s).mkdir(parents=True, exist_ok=True)
+
+        labelled = background = 0
+        for i, name in enumerate(names):
+            s = "train" if i < n_train else ("val" if i < n_train + n_val else "test")
+            if progress_callback and (i % 25 == 0 or i == n - 1):
+                progress_callback(i + 1, n, f"Moving files into {s} ({i + 1}/{n})...")
+            src_img = locs[name]
+            dst_img = lay.images / s / name
+            if src_img != dst_img:
+                shutil.move(str(src_img), str(dst_img))
+
+            src_lbl = current_label[name]
+            dst_lbl = lay.labels / s / f"{Path(name).stem}.txt"
+            if src_lbl.exists():
+                if src_lbl != dst_lbl:
+                    if dst_lbl.exists():
+                        dst_lbl.unlink()
+                    shutil.move(str(src_lbl), str(dst_lbl))
+            else:
+                dst_lbl.write_text("", encoding="utf-8")
+            if dst_lbl.stat().st_size > 0:
+                labelled += 1
+            else:
+                background += 1
+
+        # labels whose image no longer exists (left over from older runs) would only confuse counts
+        orphans = 0
+        final = {lay.labels / ("train" if i < n_train else "val" if i < n_train + n_val else "test")
+                 / f"{Path(nm).stem}.txt" for i, nm in enumerate(names)}
+        for p in lay.label_files():
+            if p not in final:
+                p.unlink()
+                orphans += 1
+        lay.clear_caches()
+
+        if not class_names:
+            class_names = lay.class_names() or ["object"]
+        yaml_path = lay.write_data_yaml(list(class_names), has_test=n_test > 0)
+
+        return {
+            "total_images": n,
+            "train_count": n_train,
+            "val_count": n_val,
+            "test_count": n_test,
+            "labeled_images": labelled,
+            "background_images": background,
+            "orphan_labels_removed": orphans,
+            "classes": list(class_names),
+            "num_classes": len(class_names),
+            "data_yaml_path": yaml_path,
+            "dataset_dir": Path(dataset_dir),
+        }
