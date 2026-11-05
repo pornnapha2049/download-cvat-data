@@ -15,6 +15,51 @@ from pathlib import Path
 import torch
 from ultralytics import YOLO
 
+try:
+    import psutil
+except Exception:          # psutil ships with ultralytics; stay safe anyway
+    psutil = None
+
+_MEMORY_ERROR_HINTS = (
+    "insufficient memory", "outofmemoryerror", "out of memory", "cannot allocate memory",
+    "paging file is too small", "winerror 1455", "unable to allocate",
+    "dataloader worker", "killed by signal", "memoryerror", "bad allocation",
+)
+
+
+def is_memory_error(exc: BaseException) -> bool:
+    text = f"{type(exc).__name__}: {exc}".lower()
+    return isinstance(exc, MemoryError) or any(h in text for h in _MEMORY_ERROR_HINTS)
+
+
+def available_ram_gb() -> float:
+    try:
+        return psutil.virtual_memory().available / 1024 ** 3 if psutil else 8.0
+    except Exception:
+        return 8.0
+
+
+def safe_workers(requested: typing.Optional[int] = None) -> int:
+    """
+    DataLoader worker processes. Each worker on Windows is a full Python process (torch + a copy of
+    the dataset index + decoded images), so the Ultralytics default of 8 easily runs a PC out of RAM
+    with large images. Pick by free RAM; never more than the CPU count.
+    """
+    if requested is not None:
+        return max(0, int(requested))
+    free = available_ram_gb()
+    if free < 6:
+        w = 0
+    elif free < 12:
+        w = 2
+    elif free < 24:
+        w = 4
+    else:
+        w = 6
+    if sys.platform == "win32":
+        w = min(w, 4)
+    return min(w, max(1, (os.cpu_count() or 2) - 1))
+
 
 def auto_tune_hyperparameters(
     num_images: int,
@@ -28,7 +73,7 @@ def auto_tune_hyperparameters(
     """
     params = {
         "imgsz": 640,
-        "workers": 2 if sys.platform == "win32" else 4,
+        "workers": safe_workers(),
         "device": "0" if is_gpu else "cpu",
         "save": True,
         "plots": True,
@@ -185,8 +230,6 @@ class YoloTrainerEngine:
             else:
                 log_callback(f"⬇️ Downloading '{Path(model_resolved).name}' into {Path(model_resolved).parent} (first use only)...")
 
-        model = YOLO(model_resolved)
-
         # Callbacks for live UI updates
         def on_train_epoch_end(trainer):
             if self.stop_requested:
@@ -231,9 +274,6 @@ class YoloTrainerEngine:
                 fit_str = f", Fitness={summary['fitness']:.4f}" if summary['fitness'] else ""
                 log_callback(f"📊 Epoch {epoch}/{total_epochs} - Loss: {loss_val:.4f}{fit_str}")
 
-        # Register callback
-        model.add_callback("on_train_epoch_end", on_train_epoch_end)
-
         # Prepare training arguments
         train_args = {
             "data": str(data_yaml_path),
@@ -243,15 +283,47 @@ class YoloTrainerEngine:
             "verbose": True,
         }
         train_args.update(hyperparams)
+        train_args["workers"] = safe_workers(hyperparams.get("workers"))
+        train_args.setdefault("cache", False)        # never keep every decoded image in RAM
 
         if log_callback:
             log_callback(f"⚙️ Hyperparameters: Epochs={train_args.get('epochs')}, Batch={train_args.get('batch')}, "
                          f"ImgSz={train_args.get('imgsz')}, Patience={train_args.get('patience')}, "
-                         f"LR0={train_args.get('lr0')}, Device={train_args.get('device')}")
+                         f"LR0={train_args.get('lr0')}, Device={train_args.get('device')}, "
+                         f"Workers={train_args['workers']} (free RAM {available_ram_gb():.1f} GB)")
 
+        # Out of memory -> retry automatically with lighter settings instead of failing:
+        #   1st retry: workers=0 (no extra worker processes)   2nd/3rd: halve the batch
         t_start = time.time()
+        results = None
+        attempt = 0
         try:
-            results = model.train(**train_args)
+            while True:
+                model = YOLO(model_resolved)
+                model.add_callback("on_train_epoch_end", on_train_epoch_end)
+                try:
+                    results = model.train(**train_args)
+                    break
+                except Exception as e:
+                    if self.stop_requested or not is_memory_error(e) or attempt >= 3:
+                        raise
+                    attempt += 1
+                    old_w, old_b = train_args.get("workers"), train_args.get("batch", 16)
+                    if train_args.get("workers", 0) > 0:
+                        train_args["workers"] = 0
+                    elif isinstance(old_b, (int, float)) and old_b > 1:
+                        train_args["batch"] = max(1, int(old_b) // 2)
+                    else:
+                        raise
+                    if log_callback:
+                        log_callback(f"⚠️ Out of memory ({str(e).strip().splitlines()[-1][:160]})")
+                        log_callback(f"🔁 Retrying from epoch 1 with lighter settings: workers {old_w}→{train_args['workers']}, "
+                                     f"batch {old_b}→{train_args['batch']} (retry {attempt}/3)")
+                    del model
+                    import gc
+                    gc.collect()
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
         finally:
             self.is_training = False
             self.active_trainer = None

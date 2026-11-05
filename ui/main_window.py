@@ -3013,7 +3013,20 @@ class MainWindow(QMainWindow):
         self.btn_stop_train.setEnabled(False)
         self.studio_mascot.set_state(DancingSvgMascot.STATE_ERROR)
         self.txt_train_log.appendPlainText(f"\n❌ Training Error: {err_msg}")
-        QMessageBox.critical(self, "Training Error", f"Training encountered an error:\n{err_msg}")
+        low = err_msg.lower()
+        if any(h in low for h in ("insufficient memory", "out of memory", "outofmemory", "paging file", "cannot allocate")):
+            QMessageBox.critical(
+                self, "Not Enough Memory",
+                "Training ran out of memory, even after automatically retrying with workers = 0 and a smaller batch.\n\n"
+                "Try:\n"
+                "  • Lower Image Size (e.g. 640 → 512 or 416)\n"
+                "  • Batch Size 2–4\n"
+                "  • A smaller model (n or s instead of l / x)\n"
+                "  • Close other programs (browser, other Python processes)\n"
+                "  • Windows: increase the page file (Virtual memory)\n\n"
+                f"Details (last line):\n{err_msg.strip().splitlines()[-1][:300]}")
+        else:
+            QMessageBox.critical(self, "Training Error", f"Training encountered an error:\n{err_msg}")
 
     def _refresh_yaml_preview(self):
         yaml_path = Path(self.txt_data_yaml.text().strip())
