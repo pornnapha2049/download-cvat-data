@@ -212,13 +212,13 @@ class CocoDatasetMerger:
             "categories": self.new_categories,
         }
 
+        # One file only (the whole app reads instances_default.json). Compact JSON: ~half the size of indent=2,
+        # which matters for large datasets (100+ MB annotation files).
         with open(out_ann_path, "w", encoding="utf-8") as f:
-            json.dump(merged_coco, f, ensure_ascii=False, indent=2)
-
-        # Also write instances_merged.json for convenience
-        alt_ann_path = out_ann_dir / "instances_merged.json"
-        with open(alt_ann_path, "w", encoding="utf-8") as f:
-            json.dump(merged_coco, f, ensure_ascii=False, indent=2)
+            json.dump(merged_coco, f, ensure_ascii=False, separators=(",", ":"))
+        stale = out_ann_dir / "instances_merged.json"   # duplicate written by older versions
+        if stale.exists():
+            stale.unlink()
 
         if progress_callback:
             progress_callback(total_files, total_files, "Merge complete!")
