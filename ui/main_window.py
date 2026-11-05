@@ -2713,7 +2713,20 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "File Not Found", f"data.yaml not found at:\n{yaml_path}")
             return
 
-        params = auto_tune_hyperparameters(yaml_path)
+        try:
+            st = dataset_stats(yaml_path)
+        except Exception as e:
+            QMessageBox.warning(self, "Auto-Tune", f"Could not read the dataset from:\n{yaml_path}\n\n{e}")
+            return
+        n_train = (st.get("splits", {}).get("train") or {}).get("images", 0)
+        params = auto_tune_hyperparameters(
+            num_images=n_train or st.get("total_images", 0),
+            num_annotations=st.get("total_instances", 0),
+            num_classes=st.get("num_classes", 0),
+            is_gpu=torch.cuda.is_available(),
+        )
+        if params.get("optimizer") and self.cmb_optimizer.findText(params["optimizer"]) >= 0:
+            self.cmb_optimizer.setCurrentText(params["optimizer"])
         self.spin_epochs.setValue(params["epochs"])
         self.spin_batch.setValue(params["batch"])
         self.spin_imgsz.setValue(params["imgsz"])
@@ -2723,12 +2736,15 @@ class MainWindow(QMainWindow):
         QMessageBox.information(
             self,
             "Auto-Tune Completed",
-            f"Recommended Hyperparameters applied based on dataset size:\n\n"
+            f"Recommended Hyperparameters applied based on dataset size "
+            f"({n_train or st.get('total_images', 0)} train images, {st.get('total_instances', 0)} objects, "
+            f"{st.get('num_classes', 0)} classes, {'GPU' if torch.cuda.is_available() else 'CPU'}):\n\n"
             f"• Epochs: {params['epochs']}\n"
             f"• Batch Size: {params['batch']}\n"
             f"• Image Size: {params['imgsz']}\n"
             f"• Early Stopping (Patience): {params['patience']}\n"
-            f"• Learning Rate (lr0): {params['lr0']}"
+            f"• Learning Rate (lr0): {params['lr0']}\n"
+            f"• Optimizer: {params.get('optimizer', 'auto')}"
         )
 
     def _on_start_training(self):
