@@ -13,6 +13,7 @@ Featuring:
 import os
 import sys
 import json
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -87,6 +88,18 @@ class CvatAuthWorker(QThread):
             self.error_signal.emit(str(e))
 
 
+def find_leftover_task_dirs(dataset_dir: Path) -> list[Path]:
+    """Per-task CVAT export folders (task_<id>_<name> with annotations/*.json) left in the dataset folder."""
+    out = []
+    try:
+        for d in Path(dataset_dir).iterdir():
+            if d.is_dir() and re.match(r"task_\d+_", d.name) and (d / "annotations").is_dir():
+                out.append(d)
+    except OSError:
+        pass
+    return sorted(out)
+
+
 class CvatDownloadWorker(QThread):
     """
     Downloads the selected CVAT tasks (COCO 1.0), merges them into ONE dataset in `dataset_dir`
@@ -158,6 +171,8 @@ class CvatDownloadWorker(QThread):
             shutil.move(str(tmp_out / "images"), str(self.dataset_dir / "images"))
             shutil.move(str(tmp_out / "annotations"), str(self.dataset_dir / "annotations"))
             for d in (tmp_out, dl_root, self.dataset_dir / "raw_tasks"):   # raw_tasks = old per-task layout
+                shutil.rmtree(d, ignore_errors=True)
+            for d in find_leftover_task_dirs(self.dataset_dir):          # task_<id>_* from older versions
                 shutil.rmtree(d, ignore_errors=True)
 
             stats.update({
@@ -1165,6 +1180,22 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(dl_card)
 
+        # Leftover per-task folders (e.g. from an older version) -> one-click clean up
+        self.leftover_row = QFrame()
+        self.leftover_row.setProperty("class", "CardFrame")
+        lo = QHBoxLayout(self.leftover_row)
+        lo.setContentsMargins(16, 8, 16, 8)
+        self.lbl_leftover = QLabel("")
+        self.lbl_leftover.setWordWrap(True)
+        lo.addWidget(self.lbl_leftover, 1)
+        self.btn_clean_leftover = QPushButton("Remove Task Folders")
+        self.btn_clean_leftover.setProperty("class", "DangerButton")
+        self.btn_clean_leftover.clicked.connect(self._on_clean_leftover_tasks)
+        lo.addWidget(self.btn_clean_leftover)
+        self.leftover_row.hide()
+        layout.insertWidget(layout.indexOf(self.tbl_tasks), self.leftover_row)   # above the table, always visible
+        self.txt_dl_folder.textChanged.connect(lambda _: self._refresh_leftover_tasks())
+
         # Progress & Status
         self.prog_dl = QProgressBar()
         self.prog_dl.setValue(0)
@@ -1204,6 +1235,8 @@ class MainWindow(QMainWindow):
         icon_box_lbl.setPixmap(get_svg_pixmap("box", 28, 28))
         c_det_top.addWidget(icon_box_lbl)
         c_det_top.addStretch()
+        self.lbl_det_badge = QLabel()
+        c_det_top.addWidget(self.lbl_det_badge)
         card_det_layout.addLayout(c_det_top)
 
         lbl_det_title = QLabel("YOLO Detection")
@@ -1215,9 +1248,7 @@ class MainWindow(QMainWindow):
         lbl_det_sub.setWordWrap(True)
         card_det_layout.addWidget(lbl_det_sub)
 
-        self.rb_mode_det = QRadioButton("Select Detection Mode")
-        self.rb_mode_det.setChecked(True)
-        self.rb_mode_det.toggled.connect(self._on_task_mode_changed)
+        self.rb_mode_det = QRadioButton("Detection")
         card_det_layout.addWidget(self.rb_mode_det)
 
         choice_row.addWidget(self.card_det, stretch=1)
@@ -1233,6 +1264,8 @@ class MainWindow(QMainWindow):
         icon_poly_lbl.setPixmap(get_svg_pixmap("polygon", 28, 28))
         c_seg_top.addWidget(icon_poly_lbl)
         c_seg_top.addStretch()
+        self.lbl_seg_badge = QLabel()
+        c_seg_top.addWidget(self.lbl_seg_badge)
         card_seg_layout.addLayout(c_seg_top)
 
         lbl_seg_title = QLabel("YOLO Segmentation")
@@ -1244,11 +1277,24 @@ class MainWindow(QMainWindow):
         lbl_seg_sub.setWordWrap(True)
         card_seg_layout.addWidget(lbl_seg_sub)
 
-        self.rb_mode_seg = QRadioButton("Select Segmentation Mode")
+        self.rb_mode_seg = QRadioButton("Segmentation")
         card_seg_layout.addWidget(self.rb_mode_seg)
 
         choice_row.addWidget(self.card_seg, stretch=1)
         layout.addLayout(choice_row)
+
+        # The two radios live in different cards, so Qt does NOT make them exclusive on its own
+        # (that let both be checked and the convert always ran as "detect"). Group them explicitly.
+        self.grp_conv_mode = QButtonGroup(self)
+        self.grp_conv_mode.setExclusive(True)
+        self.grp_conv_mode.addButton(self.rb_mode_det, 0)
+        self.grp_conv_mode.addButton(self.rb_mode_seg, 1)
+        self.rb_mode_det.setChecked(True)
+        self.grp_conv_mode.buttonToggled.connect(lambda *_: self._on_task_mode_changed())
+        for card, rb in ((self.card_det, self.rb_mode_det), (self.card_seg, self.rb_mode_seg)):
+            card.setCursor(Qt.PointingHandCursor)
+            card.mousePressEvent = lambda e, r=rb: r.setChecked(True)   # click anywhere on the card
+        self._on_task_mode_changed()
 
         # Conversion Paths Card
         conv_paths = QFrame()
@@ -1932,14 +1978,17 @@ class MainWindow(QMainWindow):
         self.btn_footer_next.setEnabled(step_idx < self.pages.count() - 1)
         if step_idx < len(self.STEP_TITLES) - 1:
             nxt = self.STEP_TITLES[step_idx + 1][0].split(". ", 1)[-1]
-            self.btn_footer_next.setText(f"Next: {nxt}")
+            self.btn_footer_next.setText(f"Next: {nxt}".replace("&", "&&"))
         else:
             self.btn_footer_next.setText("Next Step")
         if step_idx > 0:
             prv = self.STEP_TITLES[step_idx - 1][0].split(". ", 1)[-1]
-            self.btn_footer_prev.setText(f"Back: {prv}")
+            self.btn_footer_prev.setText(f"Back: {prv}".replace("&", "&&"))
         else:
             self.btn_footer_prev.setText("Previous")
+
+        if step_idx == self.STEP_DOWNLOAD:
+            self._refresh_leftover_tasks()
 
         # Refresh preview if going to Train
         if step_idx == self.STEP_TRAIN:
@@ -2258,6 +2307,45 @@ class MainWindow(QMainWindow):
         self.active_worker.error_signal.connect(self._on_download_error)
         self.active_worker.start()
 
+    def _refresh_leftover_tasks(self):
+        ds = Path(self.txt_dl_folder.text().strip())
+        left = find_leftover_task_dirs(ds)
+        has_merged = (ds / "annotations" / "instances_default.json").exists()
+        if left and has_merged:
+            self.lbl_leftover.setText(
+                f"⚠  {len(left)} per-task folders are still in {ds} (task_{left[0].name.split('_')[1]}_… ). "
+                f"The merged dataset (images/ + annotations/) is already there — these can be removed.")
+            self.leftover_row.show()
+        else:
+            self.leftover_row.hide()
+
+    def _on_clean_leftover_tasks(self):
+        ds = Path(self.txt_dl_folder.text().strip())
+        left = find_leftover_task_dirs(ds)
+        if not left:
+            self.leftover_row.hide()
+            return
+        ans = QMessageBox.question(
+            self, "Remove Task Folders",
+            f"Delete {len(left)} per-task folders from:\n{ds}\n\n"
+            + "\n".join(d.name for d in left[:8]) + ("\n…" if len(left) > 8 else "")
+            + "\n\nimages/ and annotations/ (the merged dataset) are kept.",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if ans != QMessageBox.Yes:
+            return
+        failed = []
+        for d in left:
+            try:
+                shutil.rmtree(d)
+            except Exception as e:
+                failed.append(f"{d.name}: {e}")
+        self._refresh_leftover_tasks()
+        if failed:
+            QMessageBox.warning(self, "Some Folders Not Removed", "\n".join(failed[:10]))
+        else:
+            self.notify.add("success", "Task folders removed", f"{len(left)} folders deleted from {ds}",
+                            {"type": "folder", "path": str(ds)}, toast=False)
+
     def _on_download_progress(self, cur: int, tot: int, desc: str):
         self.prog_dl.setMaximum(tot)
         self.prog_dl.setValue(cur)
@@ -2280,6 +2368,7 @@ class MainWindow(QMainWindow):
         self.txt_split_img_src.setText(str(ds / "images"))
         self.last_class_names = None   # converter will report the new class list
 
+        self._refresh_leftover_tasks()
         self.notify.add("success", "Download & merge finished", summary, {"type": "folder", "path": str(ds)})
         QMessageBox.information(
             self, "Download & Merge Finished",
@@ -2298,11 +2387,20 @@ class MainWindow(QMainWindow):
     # STEP 3: Convert Slots
     # -----------------------------------------------------------------
     def _on_task_mode_changed(self):
+        """Selected card = navy with a 'SELECTED' badge; the other card is light. Keeps Step 4 task in sync."""
         is_det = self.rb_mode_det.isChecked()
-        self.card_det.setProperty("class", "ChoiceCardNavy" if is_det else "ChoiceCardPink")
-        self.card_seg.setProperty("class", "ChoiceCardPink" if is_det else "ChoiceCardNavy")
-        self._repolish(self.card_det)
-        self._repolish(self.card_seg)
+        for card, badge, selected in ((self.card_det, self.lbl_det_badge, is_det),
+                                      (self.card_seg, self.lbl_seg_badge, not is_det)):
+            card.setProperty("class", "ChoiceCardNavy" if selected else "ChoiceCardPink")
+            badge.setText("✓  SELECTED" if selected else "Click to select")
+            badge.setStyleSheet(
+                "background: #ffffff; color: %s; border-radius: 4px; padding: 3px 10px; font-weight: 700; font-size: 11px;"
+                % PALETTE["teal"] if selected else
+                f"color: {PALETTE['muted']}; font-size: 11px; background: transparent;")
+            self._repolish(card)
+        mode = "detect" if is_det else "segment"
+        if hasattr(self, "cmb_train_task") and self.cmb_train_task.currentText() != mode:
+            self.cmb_train_task.setCurrentText(mode)   # training task must match the label format
 
     def _on_run_convert(self):
         json_path = Path(self.txt_conv_json.text().strip())
