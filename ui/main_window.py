@@ -48,12 +48,7 @@ from ui.svg_icons import get_svg_icon, get_svg_pixmap, icon_name_for
 from ui.report_dialog import ReportDialog, StatCard, pct, fmt_secs
 from ui.notifications import NotificationCenter
 
-try:  # optional: secure password storage (Windows Credential Manager / macOS Keychain)
-    import keyring
-except Exception:  # pragma: no cover
-    keyring = None
-
-KEYRING_SERVICE = "CVAT to YOLO Studio"
+from ui import secure_store   # keyring, or Windows DPAPI when keyring is not installed
 
 
 def bgr_to_qpixmap(bgr_array: np.ndarray) -> QPixmap:
@@ -838,13 +833,11 @@ class MainWindow(QMainWindow):
         self.chk_remember = QCheckBox("Remember URL && username")
         self.chk_remember.setChecked(True)
         self.chk_remember_pwd = QCheckBox("Remember password")
-        if keyring is None:
-            self.chk_remember_pwd.setEnabled(False)
-            self.chk_remember_pwd.setToolTip("Install 'keyring' (pip install keyring) to store the password securely.")
-        else:
-            self.chk_remember_pwd.setToolTip("Stored securely in Windows Credential Manager, not in a file.")
-        self.chk_remember.toggled.connect(lambda on: (self.chk_remember_pwd.setEnabled(on and keyring is not None),
-                                                      None if on else self.chk_remember_pwd.setChecked(False)))
+        self.chk_remember_pwd.setToolTip(secure_store.describe())
+        # disabled checkboxes look almost the same in this theme -> make the state obvious
+        self.chk_remember_pwd.setStyleSheet(f"QCheckBox:disabled {{ color: {PALETTE['faint']}; }}")
+        self.chk_remember_pwd.setEnabled(secure_store.available())
+        self.chk_remember.toggled.connect(self._on_remember_toggled)
         remember_row.addWidget(self.chk_remember)
         remember_row.addWidget(self.chk_remember_pwd)
         remember_row.addStretch()
@@ -854,6 +847,11 @@ class MainWindow(QMainWindow):
         self.btn_forget_login.clicked.connect(self._forget_saved_login)
         remember_row.addWidget(self.btn_forget_login)
         right_layout.addLayout(remember_row)
+        if not secure_store.available():
+            hint = QLabel("Remember password needs the 'keyring' package on this system: pip install keyring")
+            hint.setWordWrap(True)
+            hint.setStyleSheet(f"color: {PALETTE['muted']}; font-size: 11px;")
+            right_layout.addWidget(hint)
 
         self.lbl_login_status = QLabel("")
         self.lbl_login_status.setAlignment(Qt.AlignCenter)
@@ -2035,6 +2033,11 @@ class MainWindow(QMainWindow):
     # -----------------------------------------------------------------
     # Remember me
     # -----------------------------------------------------------------
+    def _on_remember_toggled(self, on: bool):
+        self.chk_remember_pwd.setEnabled(on and secure_store.available())
+        if not on:
+            self.chk_remember_pwd.setChecked(False)
+
     def _load_saved_login(self):
         urls = self.settings.value("login/url_history", [], type=list) or []
         users = self.settings.value("login/user_history", [], type=list) or []
@@ -2053,15 +2056,12 @@ class MainWindow(QMainWindow):
         user = self.settings.value("login/username", "", type=str)
         self.txt_login_url.setText(url)
         self.txt_login_user.setText(user)
-        remember_pwd = self.settings.value("login/remember_password", False, type=bool) and keyring is not None
+        remember_pwd = self.settings.value("login/remember_password", False, type=bool) and secure_store.available()
         self.chk_remember_pwd.setChecked(remember_pwd)
         if remember_pwd and url and user:
-            try:
-                pwd = keyring.get_password(KEYRING_SERVICE, f"{user}@{url}")
-                if pwd:
-                    self.txt_login_pass.setText(pwd)
-            except Exception:
-                pass
+            pwd = secure_store.load_password(self.settings, f"{user}@{url}")
+            if pwd:
+                self.txt_login_pass.setText(pwd)
         (self.txt_login_pass if user else self.txt_login_user).setFocus()
 
     def _save_login(self):
@@ -2083,27 +2083,22 @@ class MainWindow(QMainWindow):
         if user:
             push("login/user_history", user)
 
-        remember_pwd = self.chk_remember_pwd.isChecked() and keyring is not None
+        remember_pwd = self.chk_remember_pwd.isChecked() and secure_store.available()
+        account = f"{user}@{url}"
+        if user and remember_pwd:
+            remember_pwd = secure_store.save_password(self.settings, account, self.txt_login_pass.text())
+        elif user:
+            secure_store.delete_password(self.settings, account)
         self.settings.setValue("login/remember_password", remember_pwd)
-        if keyring is not None and user:
-            try:
-                if remember_pwd:
-                    keyring.set_password(KEYRING_SERVICE, f"{user}@{url}", self.txt_login_pass.text())
-                else:
-                    keyring.delete_password(KEYRING_SERVICE, f"{user}@{url}")
-            except Exception:
-                pass
         self.settings.sync()
         self.btn_forget_login.setVisible(True)
 
     def _forget_saved_login(self, silent: bool = False):
         url = self.settings.value("login/url", "", type=str)
         user = self.settings.value("login/username", "", type=str)
-        if keyring is not None and user:
-            try:
-                keyring.delete_password(KEYRING_SERVICE, f"{user}@{url}")
-            except Exception:
-                pass
+        if user:
+            secure_store.delete_password(self.settings, f"{user}@{url}")
+        secure_store.delete_all(self.settings)
         for k in ("login/url", "login/username", "login/url_history", "login/user_history", "login/remember_password"):
             self.settings.remove(k)
         self.settings.sync()
