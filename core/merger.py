@@ -115,8 +115,9 @@ class CocoDatasetMerger:
             if not coco_jsons:
                 coco_jsons = sorted(base.rglob("*.json"))
 
-        # Deduplicate JSON paths
-        coco_jsons = sorted(list(dict.fromkeys(coco_jsons)))
+        # Deduplicate JSON paths, keeping the given order: the first dataset decides the class order,
+        # so adding new tasks to an existing dataset never re-numbers its classes.
+        coco_jsons = list(dict.fromkeys(coco_jsons))
 
         if not coco_jsons:
             raise FileNotFoundError("No COCO json files found to merge.")

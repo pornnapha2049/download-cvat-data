@@ -93,61 +93,91 @@ class CvatAuthWorker(QThread):
 
 
 class CvatDownloadWorker(QThread):
-    progress_signal = pyqtSignal(int, int, str)
-    finished_signal = pyqtSignal(list)
-    error_signal = pyqtSignal(str)
+    """
+    Downloads the selected CVAT tasks (COCO 1.0), merges them into ONE dataset in `dataset_dir`
+    (images/ + annotations/instances_default.json) and deletes the per-task folders.
 
-    def __init__(self, client: CvatClientWrapper, tasks: list[dict], dest_folder: Path):
-        super().__init__()
-        self.client = client
-        self.tasks = tasks
-        self.dest_folder = dest_folder
-
-    def run(self):
-        results = []
-        total_tasks = len(self.tasks)
-        try:
-            for idx, task in enumerate(self.tasks):
-                task_id = task["id"]
-                task_name = task["name"]
-
-                def cb(cur, tot, desc):
-                    overall_pct = int(((idx + (cur / max(tot, 1))) / total_tasks) * 100)
-                    self.progress_signal.emit(overall_pct, 100, f"Task [{task_id}] {task_name}: {desc}")
-
-                out_dir = self.client.download_and_extract_task(
-                    task_id=task_id,
-                    task_name=task_name,
-                    output_dir=self.dest_folder,
-                    progress_callback=cb
-                )
-                results.append({"task": task, "dir": str(out_dir)})
-
-            self.progress_signal.emit(100, 100, "All selected tasks downloaded and extracted!")
-            self.finished_signal.emit(results)
-        except Exception as e:
-            self.error_signal.emit(str(e))
-
-
-class MergeWorker(QThread):
+    append=True keeps the dataset already in `dataset_dir` and adds the new tasks to it.
+    The existing dataset is only replaced after download + merge both succeed.
+    """
     progress_signal = pyqtSignal(int, int, str)
     finished_signal = pyqtSignal(dict)
     error_signal = pyqtSignal(str)
 
-    def __init__(self, merger: CocoDatasetMerger, src_dir: Path, out_dir: Path):
+    DERIVED = ("images", "annotations", "labels")   # rebuilt from the merged dataset
+
+    def __init__(self, client: CvatClientWrapper, merger: CocoDatasetMerger, tasks: list[dict],
+                 dataset_dir: Path, append: bool = False):
         super().__init__()
+        self.client = client
         self.merger = merger
-        self.src_dir = src_dir
-        self.out_dir = out_dir
+        self.tasks = tasks
+        self.dataset_dir = Path(dataset_dir)
+        self.append = append
 
     def run(self):
+        dl_root = self.dataset_dir / "_downloads"
+        tmp_out = self.dataset_dir / "_merge_tmp"
         try:
-            def cb(cur, tot, desc):
-                self.progress_signal.emit(cur, tot, desc)
+            for d in (dl_root, tmp_out):
+                shutil.rmtree(d, ignore_errors=True)
+            dl_root.mkdir(parents=True, exist_ok=True)
 
-            stats = self.merger.merge_datasets(self.src_dir, self.out_dir, progress_callback=cb)
+            # 1) download every task (0-80%)
+            total_tasks = len(self.tasks)
+            jsons = []
+            for idx, task in enumerate(self.tasks):
+                task_id, task_name = task["id"], task["name"]
+
+                def cb(cur, tot, desc, idx=idx, task_id=task_id, task_name=task_name):
+                    pct = int(((idx + (cur / max(tot, 1))) / total_tasks) * 80)
+                    self.progress_signal.emit(pct, 100, f"Downloading [{task_id}] {task_name}: {desc}")
+
+                out_dir = self.client.download_and_extract_task(
+                    task_id=task_id, task_name=task_name, output_dir=dl_root, progress_callback=cb)
+                js = Path(out_dir) / "annotations" / "instances_default.json"
+                if not js.exists():
+                    found = list(Path(out_dir).rglob("instances_default.json"))
+                    if not found:
+                        raise FileNotFoundError(f"Task {task_id} ({task_name}) has no COCO annotations file.")
+                    js = found[0]
+                jsons.append(js)
+
+            # 2) merge (80-97%)
+            existing_json = self.dataset_dir / "annotations" / "instances_default.json"
+            if self.append and existing_json.exists():
+                jsons.insert(0, existing_json)
+
+            def mcb(cur, tot, desc):
+                self.progress_signal.emit(80 + int(17 * cur / max(tot, 1)), 100, desc)
+
+            stats = self.merger.merge_datasets(jsons, tmp_out, progress_callback=mcb)
+
+            # 3) swap in the merged dataset, then remove per-task folders (97-100%)
+            self.progress_signal.emit(97, 100, "Replacing dataset with the merged result...")
+            for name in self.DERIVED:
+                shutil.rmtree(self.dataset_dir / name, ignore_errors=True)
+            old_yaml = self.dataset_dir / "data.yaml"
+            if old_yaml.exists():
+                old_yaml.unlink()
+            shutil.move(str(tmp_out / "images"), str(self.dataset_dir / "images"))
+            shutil.move(str(tmp_out / "annotations"), str(self.dataset_dir / "annotations"))
+            for d in (tmp_out, dl_root, self.dataset_dir / "raw_tasks"):   # raw_tasks = old per-task layout
+                shutil.rmtree(d, ignore_errors=True)
+
+            stats.update({
+                "tasks": [{"id": t["id"], "name": t["name"]} for t in self.tasks],
+                "appended": self.append and len(jsons) > len(self.tasks),
+                "dataset_dir": str(self.dataset_dir),
+                "images_dir": str(self.dataset_dir / "images"),
+                "annotations_file": str(self.dataset_dir / "annotations" / "instances_default.json"),
+            })
+            self.progress_signal.emit(100, 100, "Download & merge complete!")
             self.finished_signal.emit(stats)
         except Exception as e:
+            # existing dataset is untouched on failure; just drop the temporary folders
+            for d in (tmp_out, dl_root):
+                shutil.rmtree(d, ignore_errors=True)
             self.error_signal.emit(str(e))
 
 
@@ -403,17 +433,18 @@ class TestInferenceWorker(QThread):
 
 class MainWindow(QMainWindow):
     STEP_TITLES = [
-        ("1. Task Downloader", "Fetch & Flatten Images"),
-        ("2. Merge Datasets", "Consolidate & MD5"),
-        ("3. COCO to YOLO", "Detect or Segment"),
-        ("4. Dataset Splitter", "Train/Val/Test All Imgs"),
-        ("5. YOLO Auto-Trainer", "Auto-Tune & Patience"),
-        ("6. Test Model", "Image / Folder / Video"),
+        ("1. Download & Merge", "CVAT Tasks → One Dataset"),
+        ("2. COCO to YOLO", "Detect or Segment"),
+        ("3. Dataset Splitter", "Train/Val/Test All Imgs"),
+        ("4. YOLO Auto-Trainer", "Auto-Tune & Patience"),
+        ("5. Test Model", "Image / Folder / Video"),
     ]
 
+    STEP_DOWNLOAD, STEP_CONVERT, STEP_SPLIT, STEP_TRAIN, STEP_TEST = range(5)
+
     STEP_GUIDES = [
-        "Select tasks from your CVAT server to download and auto-flatten image directories.",
-        "Consolidate multiple downloaded tasks into data/ with automatic MD5 collision deduplication.",
+        "Select tasks from CVAT — they are downloaded, merged into one dataset in data/ "
+        "(duplicate file names resolved, class ids unified) and the per-task folders are removed.",
         "Convert COCO annotations into YOLO .txt format for Detection (BBox) or Segmentation (Polygon).",
         "Partition dataset with 100% images guarantee (including unannotated background images).",
         "Intelligently auto-tune hyperparameters, train YOLO model, and inspect outputs in runs/.",
@@ -676,7 +707,7 @@ class MainWindow(QMainWindow):
             "pink", "Work Offline", "Use local COCO / YOLO data", self._on_skip_login), 1)
         choices.addWidget(self._make_choice_card(
             "navy", "Auto-Trainer", "Train YOLO detect & segment",
-            lambda: (self._on_skip_login(), self._go_to_step(4))), 1)
+            lambda: (self._on_skip_login(), self._go_to_step(self.STEP_TRAIN))), 1)
         left_col.addLayout(choices)
 
         quote_card = QFrame()
@@ -864,7 +895,7 @@ class MainWindow(QMainWindow):
         # 1. Studio Header with Cute Chubby Cat Mascot & User Info
         layout.addWidget(self._build_studio_header())
 
-        # 2. Interactive Stepper Bar (Step 1 -> 6, Cohesive Pipeline)
+        # 2. Interactive Stepper Bar (Step 1 -> 5, Cohesive Pipeline)
         layout.addWidget(self._build_stepper_bar())
 
         # 3. Dynamic Guide Box
@@ -872,12 +903,11 @@ class MainWindow(QMainWindow):
 
         # 4. Connected Multi-Page Container (QStackedWidget)
         self.pages = QStackedWidget()
-        self.pages.addWidget(self._wrap_page_scroll(self._build_page_cvat()))       # Step 1: CVAT Downloader
-        self.pages.addWidget(self._wrap_page_scroll(self._build_page_merge()))      # Step 2: Merge Datasets
-        self.pages.addWidget(self._wrap_page_scroll(self._build_page_convert()))    # Step 3: Convert COCO to YOLO
-        self.pages.addWidget(self._wrap_page_scroll(self._build_page_split()))      # Step 4: Dataset Splitter
-        self.pages.addWidget(self._wrap_page_scroll(self._build_page_train()))      # Step 5: YOLO Auto-Trainer
-        self.pages.addWidget(self._wrap_page_scroll(self._build_page_test()))       # Step 6: Test Model
+        self.pages.addWidget(self._wrap_page_scroll(self._build_page_cvat()))       # Step 1: Download & auto-merge
+        self.pages.addWidget(self._wrap_page_scroll(self._build_page_convert()))    # Step 2: Convert COCO to YOLO
+        self.pages.addWidget(self._wrap_page_scroll(self._build_page_split()))      # Step 3: Dataset Splitter
+        self.pages.addWidget(self._wrap_page_scroll(self._build_page_train()))      # Step 4: YOLO Auto-Trainer
+        self.pages.addWidget(self._wrap_page_scroll(self._build_page_test()))       # Step 5: Test Model
         layout.addWidget(self.pages, stretch=1)
 
         # 5. Bottom Stepper Footer Navigation (< Previous | Step Pills | Next >)
@@ -1020,7 +1050,7 @@ class MainWindow(QMainWindow):
             self.step_pills.append(pill)
 
         layout.addSpacing(8)
-        self.lbl_step_indicator = QLabel("Step 1 of 6")
+        self.lbl_step_indicator = QLabel(f"Step 1 of {len(self.STEP_TITLES)}")
         self.lbl_step_indicator.setObjectName("stepIndicator")
         layout.addWidget(self.lbl_step_indicator)
 
@@ -1111,14 +1141,15 @@ class MainWindow(QMainWindow):
         self.tbl_tasks.setSelectionBehavior(QTableWidget.SelectRows)
         layout.addWidget(self.tbl_tasks, stretch=1)
 
-        # Download Card (Target data/raw_tasks)
+        # Download Card -> merged dataset folder (per-task folders are temporary)
         dl_card = QFrame()
         dl_card.setProperty("class", "CardFrame")
         dl_layout = QHBoxLayout(dl_card)
         dl_layout.setContentsMargins(16, 12, 16, 12)
 
-        dl_layout.addWidget(QLabel("Download Folder:"))
-        self.txt_dl_folder = QLineEdit(str(self.data_dir / "raw_tasks"))
+        dl_layout.addWidget(QLabel("Dataset Folder:"))
+        self.txt_dl_folder = QLineEdit(str(self.data_dir))
+        self.txt_dl_folder.setToolTip("Merged dataset goes here: images/ + annotations/instances_default.json")
         dl_layout.addWidget(self.txt_dl_folder, stretch=1)
 
         btn_browse_dl = QPushButton("Browse...")
@@ -1127,7 +1158,7 @@ class MainWindow(QMainWindow):
         btn_browse_dl.clicked.connect(lambda: self._browse_folder(self.txt_dl_folder))
         dl_layout.addWidget(btn_browse_dl)
 
-        self.btn_download_tasks = QPushButton("Download && Extract Selected (COCO 1.0)")
+        self.btn_download_tasks = QPushButton("Download && Merge Selected (COCO 1.0)")
         self.btn_download_tasks.setProperty("class", "PrimaryButton")
         self.btn_download_tasks.setIcon(get_svg_icon("download", 18))
         self.btn_download_tasks.setIconSize(QSize(18, 18))
@@ -1149,87 +1180,6 @@ class MainWindow(QMainWindow):
 
 
         layout.addLayout(status_row)
-        return page
-
-    # -----------------------------------------------------------------
-    # STEP 2: Merge Datasets
-    # -----------------------------------------------------------------
-    def _build_page_merge(self) -> QWidget:
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(4, 4, 4, 4)
-        layout.setSpacing(14)
-
-        # Quote Card
-        quote_card = QFrame()
-        quote_card.setProperty("class", "HeroQuoteCard")
-        quote_layout = QHBoxLayout(quote_card)
-        quote_layout.setContentsMargins(18, 16, 18, 16)
-
-        quote_text_box = QVBoxLayout()
-        quote_lbl = QLabel('"Patience is the companion of wisdom."')
-        quote_lbl.setObjectName("heroQuoteText")
-        quote_text_box.addWidget(quote_lbl)
-
-        author_lbl = QLabel("― Consolidate multiple tasks into data/ with automatic MD5 collision resolution.")
-        author_lbl.setObjectName("heroQuoteAuthor")
-        quote_text_box.addWidget(author_lbl)
-        quote_layout.addLayout(quote_text_box, stretch=1)
-
-        zen_icon_lbl = QLabel()
-        zen_icon_lbl.setPixmap(get_svg_pixmap("zen_stones", 48, 48))
-        quote_layout.addWidget(zen_icon_lbl)
-
-        layout.addWidget(quote_card)
-
-        # Paths Card
-        paths_card = QFrame()
-        paths_card.setProperty("class", "CardFrame")
-        paths_layout = QVBoxLayout(paths_card)
-        paths_layout.setContentsMargins(18, 16, 18, 16)
-        paths_layout.setSpacing(12)
-
-        row_src = QHBoxLayout()
-        row_src.addWidget(QLabel("Tasks Source Directory:"))
-        self.txt_merge_src = QLineEdit(str(self.data_dir / "raw_tasks"))
-        row_src.addWidget(self.txt_merge_src, stretch=1)
-        btn_src = QPushButton("Browse...")
-        btn_src.setIcon(get_svg_icon("folder", 16))
-        btn_src.setIconSize(QSize(16, 16))
-        btn_src.clicked.connect(lambda: self._browse_folder(self.txt_merge_src))
-        row_src.addWidget(btn_src)
-        paths_layout.addLayout(row_src)
-
-        row_dst = QHBoxLayout()
-        row_dst.addWidget(QLabel("Merged Output Directory:"))
-        self.txt_merge_dst = QLineEdit(str(self.data_dir))
-        row_dst.addWidget(self.txt_merge_dst, stretch=1)
-        btn_dst = QPushButton("Browse...")
-        btn_dst.setIcon(get_svg_icon("folder", 16))
-        btn_dst.setIconSize(QSize(16, 16))
-        btn_dst.clicked.connect(lambda: self._browse_folder(self.txt_merge_dst))
-        row_dst.addWidget(btn_dst)
-        paths_layout.addLayout(row_dst)
-
-        self.btn_run_merge = QPushButton("Merge Datasets (Deduplicate Images && Unify Annotations)")
-        self.btn_run_merge.setProperty("class", "PrimaryButton")
-        self.btn_run_merge.setIcon(get_svg_icon("step_merge", 18))
-        self.btn_run_merge.setIconSize(QSize(18, 18))
-        self.btn_run_merge.clicked.connect(self._on_run_merge)
-        paths_layout.addWidget(self.btn_run_merge)
-
-        self.prog_merge = QProgressBar()
-        self.prog_merge.setValue(0)
-        paths_layout.addWidget(self.prog_merge)
-
-        self.lbl_merge_stats = QLabel("No merged dataset yet.")
-        self.lbl_merge_stats.setStyleSheet("color: #10232b; font-weight: 600; min-height: 24px;")
-        paths_layout.addWidget(self.lbl_merge_stats)
-
-        layout.addWidget(paths_card)
-
-
-        layout.addStretch()
         return page
 
     # -----------------------------------------------------------------
@@ -1731,7 +1681,7 @@ class MainWindow(QMainWindow):
         self.rb_src_folder = QRadioButton("Entire Images Folder")
         self.rb_src_video = QRadioButton("Video File")
         self.rb_src_split = QRadioButton("Test Split (data.yaml)")
-        self.rb_src_split.setToolTip("Use the test split created in Step 4 (falls back to val if there is no test split).")
+        self.rb_src_split.setToolTip("Use the test split created in Step 3 (falls back to val if there is no test split).")
         self.rb_src_image.setChecked(True)
 
         self.btn_grp_source = QButtonGroup(self)
@@ -1993,13 +1943,13 @@ class MainWindow(QMainWindow):
         else:
             self.btn_footer_prev.setText("Previous")
 
-        # Refresh preview if going to Train (Step 5 / index 4)
-        if step_idx == 4:
+        # Refresh preview if going to Train
+        if step_idx == self.STEP_TRAIN:
             self._refresh_yaml_preview()
             self._update_run_preview()
 
         # Pre-fill model path if going to Test (Step 6 / index 5)
-        if step_idx == 5 and self.last_trained_weight and self.last_trained_weight.exists():
+        if step_idx == self.STEP_TEST and self.last_trained_weight and self.last_trained_weight.exists():
             if not self.txt_test_model.text().strip():
                 self.txt_test_model.setText(str(self.last_trained_weight))
 
@@ -2277,11 +2227,37 @@ class MainWindow(QMainWindow):
             return
 
         dest_folder = Path(self.txt_dl_folder.text().strip())
+        append = False
+        existing = dest_folder / "annotations" / "instances_default.json"
+        if existing.exists():
+            try:
+                with open(existing, "r", encoding="utf-8") as f:
+                    n_old = len(json.load(f).get("images", []))
+            except Exception:
+                n_old = "?"
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Question)
+            box.setWindowTitle("Dataset Already Exists")
+            box.setText(f"{dest_folder} already has a merged dataset ({n_old} images).")
+            box.setInformativeText(
+                "Add: keep it and add the new tasks.\n"
+                "Replace: start a new dataset from the selected tasks only.\n\n"
+                "Either way images/, annotations/, labels/ and data.yaml are rebuilt — "
+                "run COCO → YOLO and Split again afterwards.")
+            b_add = box.addButton("Add to Existing", QMessageBox.AcceptRole)
+            b_rep = box.addButton("Replace", QMessageBox.DestructiveRole)
+            box.addButton(QMessageBox.Cancel)
+            box.setDefaultButton(b_add)
+            box.exec_()
+            if box.clickedButton() not in (b_add, b_rep):
+                return
+            append = box.clickedButton() is b_add
+
         self.btn_download_tasks.setEnabled(False)
         self.prog_dl.setValue(0)
         self.studio_mascot.set_state(DancingSvgMascot.STATE_DOWNLOADING)
 
-        self.active_worker = CvatDownloadWorker(self.cvat_client, selected_tasks, dest_folder)
+        self.active_worker = CvatDownloadWorker(self.cvat_client, self.merger_engine, selected_tasks, dest_folder, append)
         self.active_worker.progress_signal.connect(self._on_download_progress)
         self.active_worker.finished_signal.connect(self._on_download_finished)
         self.active_worker.error_signal.connect(self._on_download_error)
@@ -2292,70 +2268,36 @@ class MainWindow(QMainWindow):
         self.prog_dl.setValue(cur)
         self.lbl_cvat_status.setText(desc)
 
-    def _on_download_finished(self, results: list):
+    def _on_download_finished(self, stats: dict):
         self.btn_download_tasks.setEnabled(True)
         self.studio_mascot.set_state(DancingSvgMascot.STATE_SUCCESS)
-        self.lbl_cvat_status.setText(f"Downloaded and extracted {len(results)} tasks into data/raw_tasks!")
-        self.notify.add("success", "Download finished",
-                        f"{len(results)} CVAT task(s) downloaded and extracted.",
-                        {"type": "folder", "path": self.txt_dl_folder.text().strip()})
+        self.prog_dl.setValue(100)
+        cats = [c.get("name", "") for c in stats.get("categories", [])]
+        n_tasks = len(stats.get("tasks", []))
+        summary = (f"{'Added' if stats.get('appended') else 'Merged'} {n_tasks} task(s) → "
+                   f"{stats.get('images_count', 0)} images, {stats.get('annotations_count', 0)} annotations, "
+                   f"{len(cats)} classes ({', '.join(cats)})")
+        self.lbl_cvat_status.setText(summary)
+
+        # next steps read the merged dataset
+        ds = Path(stats.get("dataset_dir", self.txt_dl_folder.text().strip()))
+        self.txt_conv_json.setText(str(ds / "annotations" / "instances_default.json"))
+        self.txt_split_img_src.setText(str(ds / "images"))
+        self.last_class_names = None   # converter will report the new class list
+
+        self.notify.add("success", "Download & merge finished", summary, {"type": "folder", "path": str(ds)})
         QMessageBox.information(
-            self,
-            "Download Finished",
-            f"Successfully downloaded and extracted {len(results)} task datasets into:\n{self.txt_dl_folder.text()}"
-        )
+            self, "Download & Merge Finished",
+            f"{summary}\n\nDataset: {ds}\n  images/  +  annotations/instances_default.json\n\n"
+            f"Per-task folders were removed. Next: COCO → YOLO.")
 
     def _on_download_error(self, err_msg: str):
-        self.notify.add("error", "Download failed", err_msg[:300])
+        self.notify.add("error", "Download / merge failed", err_msg[:300])
         self.btn_download_tasks.setEnabled(True)
         self.studio_mascot.set_state(DancingSvgMascot.STATE_ERROR)
         self.lbl_cvat_status.setText(f"Error: {err_msg}")
-        QMessageBox.critical(self, "Download Error", f"Task download failed:\n{err_msg}")
-
-    # -----------------------------------------------------------------
-    # STEP 2: Merge Slots
-    # -----------------------------------------------------------------
-    def _on_run_merge(self):
-        src = Path(self.txt_merge_src.text().strip())
-        dst = Path(self.txt_merge_dst.text().strip())
-
-        if not src.exists():
-            QMessageBox.warning(self, "Path Not Found", f"Source directory does not exist:\n{src}")
-            return
-
-        self.btn_run_merge.setEnabled(False)
-        self.prog_merge.setValue(0)
-        self.lbl_merge_stats.setText("Merging datasets...")
-        self.studio_mascot.set_state(DancingSvgMascot.STATE_DOWNLOADING)
-
-        self.active_worker = MergeWorker(self.merger_engine, src, dst)
-        self.active_worker.progress_signal.connect(lambda c, t, d: (self.prog_merge.setMaximum(t), self.prog_merge.setValue(c), self.lbl_merge_stats.setText(d)))
-        self.active_worker.finished_signal.connect(self._on_merge_finished)
-        self.active_worker.error_signal.connect(self._on_merge_error)
-        self.active_worker.start()
-
-    def _on_merge_finished(self, stats: dict):
-        self.btn_run_merge.setEnabled(True)
-        self.studio_mascot.set_state(DancingSvgMascot.STATE_SUCCESS)
-        self.prog_merge.setValue(100)
-
-        cats = [c.get("name", "") for c in stats.get("categories", [])]
-        summary = (
-            f"Merged: {stats.get('jsons_count', 0)} tasks | "
-            f"Images: {stats.get('images_count', 0)} | "
-            f"Annotations: {stats.get('annotations_count', 0)} | "
-            f"Categories ({len(cats)}): {', '.join(cats)}"
-        )
-        self.lbl_merge_stats.setText(summary)
-        self.notify.add("success", "Merge finished", summary, {"type": "folder", "path": self.txt_merge_dst.text().strip()})
-        QMessageBox.information(self, "Merge Successful", f"Dataset Merge Completed!\n\n{summary}\nOutput: {self.txt_merge_dst.text()}")
-
-    def _on_merge_error(self, err_msg: str):
-        self.notify.add("error", "Merge failed", err_msg[:300])
-        self.btn_run_merge.setEnabled(True)
-        self.studio_mascot.set_state(DancingSvgMascot.STATE_ERROR)
-        self.lbl_merge_stats.setText(f"Merge Error: {err_msg}")
-        QMessageBox.critical(self, "Merge Error", f"Merge failed:\n{err_msg}")
+        QMessageBox.critical(self, "Download Error",
+                             f"Download / merge failed — the existing dataset was not changed.\n\n{err_msg}")
 
     # -----------------------------------------------------------------
     # STEP 3: Convert Slots
@@ -2924,7 +2866,7 @@ class MainWindow(QMainWindow):
             self.txt_test_source.setPlaceholderText("Select video to evaluate (.mp4, .avi, ...)")
         elif idx == 3:
             self.lbl_test_src_path.setText("data.yaml Path:")
-            self.txt_test_source.setPlaceholderText("data.yaml created in Step 4 (uses its test split)")
+            self.txt_test_source.setPlaceholderText("data.yaml created in Step 3 (uses its test split)")
             yaml_guess = self.txt_data_yaml.text().strip()
             if yaml_guess and (not self.txt_test_source.text().strip().endswith((".yaml", ".yml"))):
                 self.txt_test_source.setText(yaml_guess)
@@ -2966,7 +2908,7 @@ class MainWindow(QMainWindow):
         mode_id = self.btn_grp_source.checkedId()
         mode_str = {0: "image", 1: "folder", 2: "video", 3: "split"}.get(mode_id, "image")
         if mode_str == "split" and src_p.suffix.lower() not in (".yaml", ".yml"):
-            QMessageBox.warning(self, "data.yaml Required", "Please select the data.yaml created in Step 4.")
+            QMessageBox.warning(self, "data.yaml Required", "Please select the data.yaml created in Step 3.")
             return
         self.test_eval_card.hide()
         self.last_eval_report = None
