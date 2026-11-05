@@ -27,10 +27,10 @@ from PyQt5.QtWidgets import (
     QDoubleSpinBox, QSlider, QCheckBox, QRadioButton, QButtonGroup,
     QTableWidget, QTableWidgetItem, QHeaderView, QFileDialog, QMessageBox,
     QProgressBar, QPlainTextEdit, QFrame, QGroupBox, QScrollArea, QSplitter,
-    QApplication, QGraphicsDropShadowEffect, QCompleter
+    QApplication, QGraphicsDropShadowEffect, QCompleter, QShortcut
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize, QSettings
-from PyQt5.QtGui import QImage, QPixmap, QColor
+from PyQt5.QtGui import QImage, QPixmap, QColor, QKeySequence
 from datetime import datetime
 
 from core.cvat_client import CvatClientWrapper, sanitize_filename
@@ -49,6 +49,7 @@ from ui.theme import DARK_STYLESHEET, PALETTE
 from ui.svg_icons import get_svg_icon, get_svg_pixmap, icon_name_for
 from ui.report_dialog import ReportDialog, StatCard, pct, fmt_secs
 from ui.notifications import NotificationCenter
+from ui.fullscreen_preview import TestFullscreenDialog
 
 from ui import secure_store   # keyring, or Windows DPAPI when keyring is not installed
 
@@ -485,6 +486,7 @@ class MainWindow(QMainWindow):
         self.single_test_result: dict | None = None
         self.last_video_result: dict | None = None
         self.last_video_raw_res = None
+        self.fullscreen_dialog: TestFullscreenDialog | None = None
         self.last_trained_weight: Path | None = None
         self.last_class_names: list[str] | None = None
         self.last_train_report: dict | None = None
@@ -496,6 +498,7 @@ class MainWindow(QMainWindow):
         self.setStyleSheet(DARK_STYLESHEET)
         self._apply_inverse_icons()
         self._load_saved_login()
+        QShortcut(QKeySequence(Qt.Key_F11), self, self._on_f11_pressed)
         saved_ds = self.settings.value("paths/dataset_dir", "", type=str)
         if saved_ds and Path(saved_ds).is_dir():
             self.txt_dl_folder.setText(saved_ds)
@@ -1865,6 +1868,15 @@ class MainWindow(QMainWindow):
         lbl_canvas_title.setProperty("class", "SectionTitle")
         canvas_top.addWidget(lbl_canvas_title)
 
+        # Full Screen Preview Button
+        self.btn_test_fullscreen = QPushButton("Full Screen")
+        self.btn_test_fullscreen.setIcon(get_svg_icon("fullscreen", 16))
+        self.btn_test_fullscreen.setIconSize(QSize(16, 16))
+        self.btn_test_fullscreen.setToolTip("Open prediction visual preview in Full Screen (F11 / Double-click image)")
+        self.btn_test_fullscreen.setStyleSheet("font-weight: 600; padding: 4px 10px;")
+        self.btn_test_fullscreen.clicked.connect(self._open_test_fullscreen)
+        canvas_top.addWidget(self.btn_test_fullscreen)
+
         # Quick Font Zoom Buttons right beside Carousel
         lbl_qfont = QLabel("Font:")
         lbl_qfont.setStyleSheet("color: #6b7f88; font-weight: 600; margin-left: 10px;")
@@ -1911,6 +1923,9 @@ class MainWindow(QMainWindow):
         self.lbl_test_preview.setAlignment(Qt.AlignCenter)
         self.lbl_test_preview.setObjectName("testPreview")
         self.lbl_test_preview.setMinimumSize(480, 300)
+        self.lbl_test_preview.setToolTip("Double-click to view Full Screen (or press F11)")
+        self.lbl_test_preview.setCursor(Qt.PointingHandCursor)
+        self.lbl_test_preview.mouseDoubleClickEvent = lambda event: self._open_test_fullscreen()
         cf_layout.addWidget(self.lbl_test_preview)
         canvas_col.addWidget(canvas_frame, stretch=1)
 
@@ -3163,6 +3178,8 @@ class MainWindow(QMainWindow):
             if not pix.isNull():
                 scaled = pix.scaled(self.lbl_test_preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
                 self.lbl_test_preview.setPixmap(scaled)
+            if self.fullscreen_dialog and self.fullscreen_dialog.isVisible():
+                self.fullscreen_dialog.refresh_current_view()
             return
 
         # 2. Folder / Split mode
@@ -3176,6 +3193,8 @@ class MainWindow(QMainWindow):
                 if not pix.isNull():
                     scaled = pix.scaled(self.lbl_test_preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
                     self.lbl_test_preview.setPixmap(scaled)
+            if self.fullscreen_dialog and self.fullscreen_dialog.isVisible():
+                self.fullscreen_dialog.refresh_current_view()
             return
 
         # 3. Video mode (when finished or paused)
@@ -3186,7 +3205,24 @@ class MainWindow(QMainWindow):
             if not pix.isNull():
                 scaled = pix.scaled(self.lbl_test_preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
                 self.lbl_test_preview.setPixmap(scaled)
+            if self.fullscreen_dialog and self.fullscreen_dialog.isVisible():
+                self.fullscreen_dialog.refresh_current_view()
             return
+
+    def _open_test_fullscreen(self):
+        """Opens prediction visual preview in a cinema-mode full screen dialog."""
+        if self.fullscreen_dialog is None:
+            self.fullscreen_dialog = TestFullscreenDialog(self)
+        self.fullscreen_dialog.sync_from_main()
+        self.fullscreen_dialog.showFullScreen()
+
+    def _on_f11_pressed(self):
+        """F11 shortcut: toggles fullscreen viewer when viewing Test page."""
+        if self.pages.currentIndex() == self.STEP_TEST:
+            if self.fullscreen_dialog and self.fullscreen_dialog.isVisible():
+                self.fullscreen_dialog.close()
+            else:
+                self._open_test_fullscreen()
 
     def _browse_test_source(self):
         idx = self.btn_grp_source.checkedId()
@@ -3284,6 +3320,10 @@ class MainWindow(QMainWindow):
         badge_text = ", ".join([f"{k}: {v}" for k, v in summary.items()]) or "No objects detected in frame"
         self.lbl_test_classes_badge.setText(f"Active Objects: {badge_text}")
 
+        # Stream frame to full-screen viewer if active
+        if self.fullscreen_dialog and self.fullscreen_dialog.isVisible():
+            self.fullscreen_dialog.set_frame(frame_bgr, cur, tot, summary)
+
     def _on_test_finished(self, out: dict):
         self.btn_run_test.setEnabled(True)
         self.btn_stop_test.setEnabled(False)
@@ -3349,6 +3389,9 @@ class MainWindow(QMainWindow):
             saved_msg = f"\nSaved video to: {data.get('saved_path')}" if data.get('saved_path') else ""
             self.lbl_test_classes_badge.setText(f"Video Summary: {badge_str}")
             self.lbl_test_status.setText(f"Video test complete! Processed {data.get('processed_frames')} frames.{saved_msg}")
+
+        if self.fullscreen_dialog and self.fullscreen_dialog.isVisible():
+            self.fullscreen_dialog.refresh_current_view()
 
         self._show_test_eval(out.get("eval"), Path(self.txt_test_model.text().strip()))
 
@@ -3417,6 +3460,9 @@ class MainWindow(QMainWindow):
 
         detections = item.get("detections", [])
         self._populate_detections_table(detections)
+
+        if self.fullscreen_dialog and self.fullscreen_dialog.isVisible():
+            self.fullscreen_dialog.refresh_current_view()
 
     def _on_prev_test_img(self):
         if self.current_folder_test_idx > 0:
