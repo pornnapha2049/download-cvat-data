@@ -358,6 +358,8 @@ class TestInferenceWorker(QThread):
             elif self.mode == "folder":
                 def cb(cur, tot, desc):
                     self.progress_signal.emit(cur, tot, desc)
+                def fcb(frame, cur, tot, summary):
+                    self.frame_signal.emit(frame, cur, tot, summary)
                 res = self.engine.predict_folder(
                     model_path=self.model_path,
                     folder_path=self.src_path,
@@ -366,6 +368,7 @@ class TestInferenceWorker(QThread):
                     save=self.save,
                     save_dir=self.save_dir,
                     progress_callback=cb,
+                    frame_callback=fcb,
                 )
                 self.finished_signal.emit({"mode": "folder", "data": res, "eval": self._evaluate(self.src_path)})
             elif self.mode == "split":
@@ -376,6 +379,8 @@ class TestInferenceWorker(QThread):
                     raise FileNotFoundError(f"No images found in the '{split}' split of {self.src_path}")
                 def cb(cur, tot, desc):
                     self.progress_signal.emit(cur, tot, f"[{split}] {desc}")
+                def fcb(frame, cur, tot, summary):
+                    self.frame_signal.emit(frame, cur, tot, summary)
                 res = self.engine.predict_folder(
                     model_path=self.model_path,
                     folder_path=imgs[0].parent,
@@ -384,6 +389,7 @@ class TestInferenceWorker(QThread):
                     save=self.save,
                     save_dir=self.save_dir,
                     progress_callback=cb,
+                    frame_callback=fcb,
                 )
                 ev = None
                 if not self.engine.stop_requested:
@@ -476,6 +482,9 @@ class MainWindow(QMainWindow):
         # Test state
         self.folder_test_results: list[dict] = []
         self.current_folder_test_idx: int = 0
+        self.single_test_result: dict | None = None
+        self.last_video_result: dict | None = None
+        self.last_video_raw_res = None
         self.last_trained_weight: Path | None = None
         self.last_class_names: list[str] | None = None
         self.last_train_report: dict | None = None
@@ -1726,16 +1735,57 @@ class MainWindow(QMainWindow):
         self.spin_test_iou.valueChanged.connect(lambda v: self.slider_test_iou.setValue(int(v * 100)))
         cg_layout.addWidget(self.spin_test_iou, 3, 5)
 
-        # 5. Save results checkbox & destination folder
+        # 5. Label Display & Font Size (can be adjusted in real-time during predict)
+        cg_layout.addWidget(QLabel("Label Display:"), 4, 0)
+        lbl_mode_box = QHBoxLayout()
+        self.rb_label_name = QRadioButton("Class Name (ชื่อ)")
+        self.rb_label_id = QRadioButton("Class ID (เลข)")
+        self.rb_label_none = QRadioButton("No Label (ไม่ใส่)")
+        self.rb_label_name.setChecked(True)
+        self.rb_label_name.setToolTip("Show class name and confidence score (e.g. 'person 0.85')")
+        self.rb_label_id.setToolTip("Show class numeric ID and confidence score (e.g. '0 0.85')")
+        self.rb_label_none.setToolTip("Hide label text, show bounding boxes / masks only")
+
+        self.btn_grp_label = QButtonGroup(self)
+        self.btn_grp_label.addButton(self.rb_label_name, 0)
+        self.btn_grp_label.addButton(self.rb_label_id, 1)
+        self.btn_grp_label.addButton(self.rb_label_none, 2)
+        self.btn_grp_label.buttonToggled.connect(self._on_test_label_mode_changed)
+
+        lbl_mode_box.addWidget(self.rb_label_name)
+        lbl_mode_box.addWidget(self.rb_label_id)
+        lbl_mode_box.addWidget(self.rb_label_none)
+        lbl_mode_box.addStretch()
+        cg_layout.addLayout(lbl_mode_box, 4, 1, 1, 2)
+
+        cg_layout.addWidget(QLabel("Font Size:"), 4, 3)
+        font_box = QHBoxLayout()
+        self.slider_test_font = QSlider(Qt.Horizontal)
+        self.slider_test_font.setRange(8, 48)
+        self.slider_test_font.setValue(14)
+        self.slider_test_font.setToolTip("Adjust annotation font size (8-48px). Can be adjusted live during prediction!")
+        self.spin_test_font = QSpinBox()
+        self.spin_test_font.setRange(8, 48)
+        self.spin_test_font.setValue(14)
+        self.spin_test_font.setSuffix(" px")
+        self.slider_test_font.valueChanged.connect(self.spin_test_font.setValue)
+        self.spin_test_font.valueChanged.connect(self.slider_test_font.setValue)
+        self.slider_test_font.valueChanged.connect(self._on_test_font_size_changed)
+
+        font_box.addWidget(self.slider_test_font)
+        font_box.addWidget(self.spin_test_font)
+        cg_layout.addLayout(font_box, 4, 4, 1, 2)
+
+        # 6. Save results checkbox & destination folder
         self.chk_save_test = QCheckBox("Save Test Prediction Results")
         self.chk_save_test.setChecked(True)
         self.chk_save_test.setStyleSheet("font-weight: 700; color: #0e4b5a;")
-        cg_layout.addWidget(self.chk_save_test, 4, 0)
+        cg_layout.addWidget(self.chk_save_test, 5, 0)
 
         self.txt_test_save_dir = QLineEdit(str(self.data_dir / "runs" / "test"))
         self.txt_test_save_dir.setReadOnly(True)
         self.txt_test_save_dir.setToolTip("Fixed: <data folder>/runs/test")
-        cg_layout.addWidget(self.txt_test_save_dir, 4, 1, 1, 5)
+        cg_layout.addWidget(self.txt_test_save_dir, 5, 1, 1, 5)
 
         # Action Buttons
         act_row = QHBoxLayout()
@@ -1761,15 +1811,15 @@ class MainWindow(QMainWindow):
         btn_open_results.clicked.connect(lambda: self._open_dir(Path(self.txt_test_save_dir.text().strip())))
         act_row.addWidget(btn_open_results, stretch=1)
 
-        cg_layout.addLayout(act_row, 5, 0, 1, 6)
+        cg_layout.addLayout(act_row, 6, 0, 1, 6)
 
         self.prog_test = QProgressBar()
         self.prog_test.setValue(0)
-        cg_layout.addWidget(self.prog_test, 6, 0, 1, 6)
+        cg_layout.addWidget(self.prog_test, 7, 0, 1, 6)
 
         self.lbl_test_status = QLabel("Select model weights and input source above, then click 'Run Model Test / Predict'.")
         self.lbl_test_status.setStyleSheet("color: #6b7f88; font-weight: 600;")
-        cg_layout.addWidget(self.lbl_test_status, 7, 0, 1, 6)
+        cg_layout.addWidget(self.lbl_test_status, 8, 0, 1, 6)
 
         layout.addWidget(cfg_card)
 
@@ -1814,6 +1864,24 @@ class MainWindow(QMainWindow):
         lbl_canvas_title = QLabel("Prediction Visual Preview")
         lbl_canvas_title.setProperty("class", "SectionTitle")
         canvas_top.addWidget(lbl_canvas_title)
+
+        # Quick Font Zoom Buttons right beside Carousel
+        lbl_qfont = QLabel("Font:")
+        lbl_qfont.setStyleSheet("color: #6b7f88; font-weight: 600; margin-left: 10px;")
+        canvas_top.addWidget(lbl_qfont)
+
+        btn_font_minus = QPushButton("A-")
+        btn_font_minus.setToolTip("Decrease Font Size (-2 px)")
+        btn_font_minus.setFixedWidth(36)
+        btn_font_minus.clicked.connect(lambda: self.slider_test_font.setValue(max(8, self.slider_test_font.value() - 2)))
+        canvas_top.addWidget(btn_font_minus)
+
+        btn_font_plus = QPushButton("A+")
+        btn_font_plus.setToolTip("Increase Font Size (+2 px)")
+        btn_font_plus.setFixedWidth(36)
+        btn_font_plus.clicked.connect(lambda: self.slider_test_font.setValue(min(48, self.slider_test_font.value() + 2)))
+        canvas_top.addWidget(btn_font_plus)
+
         canvas_top.addStretch()
 
         # Folder Carousel Navigator
@@ -3065,6 +3133,61 @@ class MainWindow(QMainWindow):
                 self.txt_test_source.setText(yaml_guess)
         self.chk_eval_labels.setEnabled(idx in (0, 1))
 
+    def _get_current_test_label_mode(self) -> str:
+        """Returns active label mode: 'name' (class name), 'id' (numeric class id), or 'none' (no label)."""
+        idx = self.btn_grp_label.checkedId()
+        return {0: "name", 1: "id", 2: "none"}.get(idx, "name")
+
+    def _on_test_label_mode_changed(self):
+        """Called whenever user toggles between Class Name, Class ID, and No Label."""
+        mode = self._get_current_test_label_mode()
+        self.tester_engine.set_visual_settings(label_mode=mode)
+        self._refresh_current_test_preview()
+
+    def _on_test_font_size_changed(self, val: int):
+        """Called whenever user adjusts font size slider/spinbox (even while predicting)."""
+        self.tester_engine.set_visual_settings(font_size=val)
+        self._refresh_current_test_preview()
+
+    def _refresh_current_test_preview(self):
+        """Immediately re-renders the current visible test image or frame with updated font size / label mode."""
+        mode = self._get_current_test_label_mode()
+        fs = self.slider_test_font.value()
+
+        # 1. Single image mode
+        if getattr(self, "single_test_result", None) and "raw_result" in self.single_test_result:
+            res = self.single_test_result["raw_result"]
+            new_bgr = self.tester_engine.plot_result(res, label_mode=mode, font_size=fs)
+            self.single_test_result["annotated_bgr"] = new_bgr
+            pix = bgr_to_qpixmap(new_bgr)
+            if not pix.isNull():
+                scaled = pix.scaled(self.lbl_test_preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                self.lbl_test_preview.setPixmap(scaled)
+            return
+
+        # 2. Folder / Split mode
+        if self.folder_test_results and 0 <= self.current_folder_test_idx < len(self.folder_test_results):
+            item = self.folder_test_results[self.current_folder_test_idx]
+            res = item.get("raw_result")
+            if res is not None:
+                new_bgr = self.tester_engine.plot_result(res, label_mode=mode, font_size=fs)
+                item["annotated_bgr"] = new_bgr
+                pix = bgr_to_qpixmap(new_bgr)
+                if not pix.isNull():
+                    scaled = pix.scaled(self.lbl_test_preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                    self.lbl_test_preview.setPixmap(scaled)
+            return
+
+        # 3. Video mode (when finished or paused)
+        if getattr(self, "last_video_raw_res", None) is not None:
+            res = self.last_video_raw_res
+            new_bgr = self.tester_engine.plot_result(res, label_mode=mode, font_size=fs)
+            pix = bgr_to_qpixmap(new_bgr)
+            if not pix.isNull():
+                scaled = pix.scaled(self.lbl_test_preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                self.lbl_test_preview.setPixmap(scaled)
+            return
+
     def _browse_test_source(self):
         idx = self.btn_grp_source.checkedId()
         if idx == 0:
@@ -3107,9 +3230,19 @@ class MainWindow(QMainWindow):
             return
         self.test_eval_card.hide()
         self.last_eval_report = None
+        self.single_test_result = None
+        self.last_video_result = None
+        self.last_video_raw_res = None
+        self.folder_test_results = []
 
         conf = self.spin_test_conf.value()
         iou = self.spin_test_iou.value()
+
+        # Sync live visual settings to engine
+        self.tester_engine.set_visual_settings(
+            label_mode=self._get_current_test_label_mode(),
+            font_size=self.slider_test_font.value(),
+        )
 
         self.btn_run_test.setEnabled(False)
         self.btn_stop_test.setEnabled(True)
@@ -3145,7 +3278,9 @@ class MainWindow(QMainWindow):
             scaled = pix.scaled(self.lbl_test_preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
             self.lbl_test_preview.setPixmap(scaled)
 
-        self.lbl_test_img_counter.setText(f"Frame {cur} / {tot}")
+        mode_name = getattr(self.active_worker, "mode", "frame")
+        prefix = "Image" if mode_name in ("folder", "split") else "Frame"
+        self.lbl_test_img_counter.setText(f"{prefix} {cur} / {tot}")
         badge_text = ", ".join([f"{k}: {v}" for k, v in summary.items()]) or "No objects detected in frame"
         self.lbl_test_classes_badge.setText(f"Active Objects: {badge_text}")
 
@@ -3162,6 +3297,7 @@ class MainWindow(QMainWindow):
             mode = "folder"
 
         if mode == "image":
+            self.single_test_result = data
             annotated_bgr = data.get("annotated_bgr")
             pix = bgr_to_qpixmap(annotated_bgr)
             if not pix.isNull():
@@ -3199,6 +3335,8 @@ class MainWindow(QMainWindow):
             self.lbl_test_status.setText(f"Batch test complete! Processed {len(self.folder_test_results)} images.{saved_msg}")
 
         elif mode == "video":
+            self.last_video_result = data
+            self.last_video_raw_res = data.get("last_result")
             annotated_bgr = data.get("last_annotated")
             if annotated_bgr is not None:
                 pix = bgr_to_qpixmap(annotated_bgr)
@@ -3258,7 +3396,15 @@ class MainWindow(QMainWindow):
         self.current_folder_test_idx = idx
         item = self.folder_test_results[idx]
 
-        annotated_bgr = item.get("annotated_bgr")
+        res = item.get("raw_result")
+        if res is not None:
+            mode = self._get_current_test_label_mode()
+            fs = self.slider_test_font.value()
+            annotated_bgr = self.tester_engine.plot_result(res, label_mode=mode, font_size=fs)
+            item["annotated_bgr"] = annotated_bgr
+        else:
+            annotated_bgr = item.get("annotated_bgr")
+
         pix = bgr_to_qpixmap(annotated_bgr)
         if not pix.isNull():
             scaled = pix.scaled(self.lbl_test_preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)

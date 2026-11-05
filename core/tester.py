@@ -15,6 +15,14 @@ IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"}
 VIDEO_EXTS = {".mp4", ".avi", ".mov", ".mkv", ".webm", ".wmv"}
 
 
+class _IdDict(dict):
+    """Dictionary mapping keys to their string representation, falling back to str(key)."""
+    def __missing__(self, key):
+        return str(key)
+    def get(self, key, default=None):
+        return str(key)
+
+
 class YoloTestEngine:
     """Manages model prediction for single images, folders, or video files."""
 
@@ -22,6 +30,58 @@ class YoloTestEngine:
         self.stop_requested: bool = False
         self._loaded_model = None
         self._loaded_path = None
+        self.label_mode: str = "name"   # "name" (class name), "id" (numeric class id), "none" (no label text)
+        self.font_size: int = 14
+        self.show_conf: bool = True
+
+    def set_visual_settings(
+        self,
+        label_mode: str | None = None,
+        font_size: int | None = None,
+        show_conf: bool | None = None,
+    ):
+        """Updates real-time visual annotation settings dynamically during or before inference."""
+        if label_mode is not None:
+            self.label_mode = label_mode
+        if font_size is not None:
+            self.font_size = max(6, int(font_size))
+        if show_conf is not None:
+            self.show_conf = bool(show_conf)
+
+    def get_visual_settings(self) -> tuple[str, int, bool]:
+        """Returns current (label_mode, font_size, show_conf)."""
+        return self.label_mode, self.font_size, self.show_conf
+
+    def plot_result(
+        self,
+        res,
+        label_mode: str | None = None,
+        font_size: int | None = None,
+        show_conf: bool | None = None,
+    ) -> np.ndarray:
+        """
+        Plots annotations on a YOLO Results object with custom label mode and font size.
+        - label_mode: 'name' (class name), 'id' (numeric class id), 'none' (bounding box/mask only)
+        - font_size: font size in pixels (rendered via PIL truetype)
+        - show_conf: whether confidence score is displayed
+        """
+        mode = label_mode if label_mode is not None else self.label_mode
+        fs = font_size if font_size is not None else self.font_size
+        conf = show_conf if show_conf is not None else self.show_conf
+
+        orig_names = res.names
+        try:
+            if mode == "none":
+                annotated = res.plot(pil=True, font_size=fs, labels=False, conf=conf)
+            elif mode == "id":
+                res.names = _IdDict({k: str(k) for k in orig_names})
+                annotated = res.plot(pil=True, font_size=fs, labels=True, conf=conf)
+            else:  # "name" (default)
+                annotated = res.plot(pil=True, font_size=fs, labels=True, conf=conf)
+        finally:
+            res.names = orig_names
+
+        return np.ascontiguousarray(np.asarray(annotated))
 
     def stop(self):
         """Signals active inference loop to abort gracefully."""
@@ -45,6 +105,8 @@ class YoloTestEngine:
         iou: float = 0.45,
         save: bool = False,
         save_dir: Path | None = None,
+        font_size: int | None = None,
+        label_mode: str | None = None,
     ) -> dict:
         """
         Runs prediction on a single image.
@@ -65,7 +127,9 @@ class YoloTestEngine:
         )
 
         res = results[0]
-        annotated_bgr = res.plot()
+        mode = label_mode if label_mode is not None else self.label_mode
+        fs = font_size if font_size is not None else self.font_size
+        annotated_bgr = self.plot_result(res, label_mode=mode, font_size=fs, show_conf=self.show_conf)
 
         detections = []
         if res.boxes is not None and len(res.boxes) > 0:
@@ -99,6 +163,7 @@ class YoloTestEngine:
             "source": str(img_p),
             "file_name": img_p.name,
             "annotated_bgr": annotated_bgr,
+            "raw_result": res,
             "detections": detections,
             "count": len(detections),
             "classes_summary": cls_summary,
@@ -115,6 +180,9 @@ class YoloTestEngine:
         save: bool = False,
         save_dir: Path | None = None,
         progress_callback: typing.Optional[typing.Callable[[int, int, str], None]] = None,
+        frame_callback: typing.Optional[typing.Callable[[np.ndarray, int, int, dict], None]] = None,
+        font_size: int | None = None,
+        label_mode: str | None = None,
     ) -> dict:
         """
         Runs prediction sequentially across all images in a folder.
@@ -150,11 +218,16 @@ class YoloTestEngine:
                 iou=iou,
                 save=save,
                 save_dir=save_dir,
+                font_size=font_size,
+                label_mode=label_mode,
             )
             results.append(res)
 
             for cname, count in res["classes_summary"].items():
                 overall_classes[cname] = overall_classes.get(cname, 0) + count
+
+            if frame_callback:
+                frame_callback(res["annotated_bgr"], idx + 1, total, res["classes_summary"])
 
         return {
             "folder": str(f_path),
@@ -175,6 +248,8 @@ class YoloTestEngine:
         save_dir: Path | None = None,
         progress_callback: typing.Optional[typing.Callable[[int, int, str], None]] = None,
         frame_callback: typing.Optional[typing.Callable[[np.ndarray, int, int, dict], None]] = None,
+        font_size: int | None = None,
+        label_mode: str | None = None,
     ) -> dict:
         """
         Runs prediction on a video file with frame-by-frame preview and optional output video recording.
@@ -207,6 +282,7 @@ class YoloTestEngine:
         frame_idx = 0
         overall_classes = {}
         last_annotated = None
+        last_res = None
 
         try:
             while cap.isOpened():
@@ -228,8 +304,11 @@ class YoloTestEngine:
                     verbose=False
                 )
                 res = results[0]
-                annotated = res.plot()
+                cur_mode = label_mode if label_mode is not None else self.label_mode
+                cur_fs = font_size if font_size is not None else self.font_size
+                annotated = self.plot_result(res, label_mode=cur_mode, font_size=cur_fs, show_conf=self.show_conf)
                 last_annotated = annotated
+                last_res = res
 
                 # Collect detected class counts
                 frame_summary = {}
@@ -260,6 +339,7 @@ class YoloTestEngine:
             "processed_frames": frame_idx,
             "fps": fps,
             "last_annotated": last_annotated,
+            "last_result": last_res,
             "saved_path": saved_video_path,
             "classes_summary": overall_classes,
         }
