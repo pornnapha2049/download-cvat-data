@@ -62,7 +62,7 @@ class YoloTestEngine:
         """
         Plots annotations on a YOLO Results object with custom label mode and font size.
         - label_mode: 'name' (class name), 'id' (numeric class id), 'none' (bounding box/mask only)
-        - font_size: font size in pixels (rendered via PIL truetype)
+        - font_size: font size scaling for bounding boxes and labels
         - show_conf: whether confidence score is displayed
         """
         mode = label_mode if label_mode is not None else self.label_mode
@@ -71,13 +71,14 @@ class YoloTestEngine:
 
         orig_names = res.names
         try:
+            lw = max(1, int(round(fs / 7.0))) if fs is not None else None
             if mode == "none":
-                annotated = res.plot(pil=True, font_size=fs, labels=False, conf=conf)
+                annotated = res.plot(line_width=lw, labels=False, conf=conf)
             elif mode == "id":
                 res.names = _IdDict({k: str(k) for k in orig_names})
-                annotated = res.plot(pil=True, font_size=fs, labels=True, conf=conf)
+                annotated = res.plot(line_width=lw, labels=True, conf=conf)
             else:  # "name" (default)
-                annotated = res.plot(pil=True, font_size=fs, labels=True, conf=conf)
+                annotated = res.plot(line_width=lw, labels=True, conf=conf)
         finally:
             res.names = orig_names
 
@@ -262,13 +263,14 @@ class YoloTestEngine:
         model = self.get_model(model_path)
 
         cap = cv2.VideoCapture(str(vid_p))
-        if not cap.isOpened():
-            raise RuntimeError(f"Failed to open video file: {vid_p}")
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) if cap.isOpened() else 1
+        fps = cap.get(cv2.CAP_PROP_FPS) if cap.isOpened() else 25.0
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) if cap.isOpened() else 0
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) if cap.isOpened() else 0
+        cap.release()
 
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 1
-        fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
-        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        total_frames = max(total_frames, 1)
+        fps = fps or 25.0
 
         writer = None
         saved_video_path = None
@@ -277,38 +279,40 @@ class YoloTestEngine:
             save_dir.mkdir(parents=True, exist_ok=True)
             saved_video_path = save_dir / f"pred_{vid_p.stem}.mp4"
             fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-            writer = cv2.VideoWriter(str(saved_video_path), fourcc, fps, (width, height))
+            if width > 0 and height > 0:
+                writer = cv2.VideoWriter(str(saved_video_path), fourcc, fps, (width, height))
 
         frame_idx = 0
         overall_classes = {}
         last_annotated = None
         last_res = None
 
+        # Predict using Ultralytics native video stream loader
+        results_stream = model.predict(
+            source=str(vid_p),
+            conf=conf,
+            iou=iou,
+            stream=True,
+            verbose=False,
+        )
+
         try:
-            while cap.isOpened():
+            for res in results_stream:
                 if self.stop_requested:
                     break
 
-                ret, frame = cap.read()
-                if not ret:
-                    break
-
                 frame_idx += 1
-
-                # Predict on frame
-                results = model.predict(
-                    source=frame,
-                    conf=conf,
-                    iou=iou,
-                    save=False,
-                    verbose=False
-                )
-                res = results[0]
                 cur_mode = label_mode if label_mode is not None else self.label_mode
                 cur_fs = font_size if font_size is not None else self.font_size
                 annotated = self.plot_result(res, label_mode=cur_mode, font_size=cur_fs, show_conf=self.show_conf)
                 last_annotated = annotated
                 last_res = res
+
+                # Lazy init writer if video dimensions were not known beforehand
+                if writer is None and save and save_dir is not None:
+                    h, w = annotated.shape[:2]
+                    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+                    writer = cv2.VideoWriter(str(saved_video_path), fourcc, fps, (w, h))
 
                 # Collect detected class counts
                 frame_summary = {}
@@ -329,7 +333,10 @@ class YoloTestEngine:
                     progress_callback(frame_idx, total_frames, f"Processing Frame {frame_idx}/{total_frames}")
 
         finally:
-            cap.release()
+            if hasattr(model, "predictor") and getattr(model.predictor, "dataset", None):
+                cap_internal = getattr(model.predictor.dataset, "cap", None)
+                if cap_internal is not None and hasattr(cap_internal, "release"):
+                    cap_internal.release()
             if writer is not None:
                 writer.release()
 
