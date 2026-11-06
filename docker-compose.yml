@@ -1,0 +1,51 @@
+version: '3.8'
+
+services:
+  cvat-studio:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: cvat-yolo-studio:latest
+    container_name: cvat-yolo-studio
+    ports:
+      - "6080:6080" # Web GUI (noVNC): Open http://localhost:6080 in any web browser
+      - "5900:5900" # Optional direct VNC viewer
+    environment:
+      - WEB_GUI=true
+      - RESOLUTION=1600x950
+    volumes:
+      # Persist datasets, trained models, and runs on host machine
+      - ./data:/app/data
+      - ./models:/app/models
+      - ./runs:/app/runs
+    shm_size: '2gb' # Recommended for PyTorch DataLoader multiprocessing
+    restart: unless-stopped
+
+  # Optional GPU service: activate via `docker compose --profile gpu up`
+  cvat-studio-gpu:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: cvat-yolo-studio:gpu
+    container_name: cvat-yolo-studio-gpu
+    profiles: ["gpu"]
+    ports:
+      - "6080:6080"
+    environment:
+      - WEB_GUI=true
+      - RESOLUTION=1600x950
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    volumes:
+      - ./data:/app/data
+      - ./models:/app/models
+      - ./runs:/app/runs
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    shm_size: '4gb'
+    restart: unless-stopped

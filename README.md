@@ -10,6 +10,8 @@
    - **Step 5: YOLO Auto-Trainer**: Train โมเดล YOLO ด้วยระบบ Auto-Tune Hyperparameters, Early Stopping (Patience), Run Versioning (`_v1`, `_v2`, ...) และเปลี่ยนชื่อ `best.pt` เป็น `{custom_name}_v{run_num}.pt` ใน `runs/.../weights/` โดยตรง
    - **Step 6: Test Model (Inference & Evaluation)**: ทดสอบโมเดลที่ Train แล้วกับภาพเดี่ยว (Single Image), ทั้งโฟลเดอร์ (Entire Folder), หรือไฟล์วิดีโอ (Video File) พร้อมดูผลลัพธ์พรีวิวแบบ Real-time และเลือกบันทึกผลได้
 
+> 🐳 **ต้องการรันด้วย Docker หรือใช้งานผ่าน Web Browser (noVNC)?** ดูคู่มือฉบับเต็มได้ที่ [README_DOCKER.md](README_DOCKER.md)
+
 ---
 
 ## 🌟 ฟีเจอร์เด่น (Key Features)
