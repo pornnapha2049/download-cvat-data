@@ -40,6 +40,7 @@ from core.splitter import DatasetSplitter
 from core.layout import DatasetLayout
 from core.trainer import YoloTrainerEngine, auto_tune_hyperparameters, get_next_run_version, resolve_model_path
 from core.tester import YoloTestEngine, IMAGE_EXTS, VIDEO_EXTS
+from core.auto_labeler import AutoLabelEngine, scan_local_models, inspect_model_metadata
 from core.evaluator import (
     dataset_stats, read_training_results, validate_on_split, evaluate_external,
     has_separate_test_split, resolve_split_images, write_report_files,
@@ -431,6 +432,218 @@ class TestInferenceWorker(QThread):
             return {"error": str(e)}
 
 
+class AutoLabelWorker(QThread):
+    progress_signal = pyqtSignal(int, int, str)
+    preview_signal = pyqtSignal(QPixmap, dict)
+    log_signal = pyqtSignal(str)
+    finished_signal = pyqtSignal(dict)
+    error_signal = pyqtSignal(str)
+
+    def __init__(self, client: CvatClientWrapper, engine: AutoLabelEngine, config: dict):
+        super().__init__()
+        self.client = client
+        self.engine = engine
+        self.cfg = config
+        self.stop_requested = False
+
+    def stop(self):
+        self.stop_requested = True
+        self.engine.stop()
+
+    def run(self):
+        try:
+            work_dir = Path(self.cfg["work_dir"])
+            work_dir.mkdir(parents=True, exist_ok=True)
+
+            source_mode = self.cfg.get("source_mode", "local")  # "local" or "cvat"
+            image_paths: list[Path] = []
+
+            # 1. Image Sourcing
+            if source_mode == "local":
+                local_dir = Path(self.cfg["local_dir"])
+                if not local_dir.exists() or not local_dir.is_dir():
+                    raise ValueError(f"Local folder does not exist: {local_dir}")
+
+                self.log_signal.emit(f"Scanning local directory: {local_dir}...")
+                self.progress_signal.emit(5, 100, "Scanning local images...")
+
+                if self.cfg.get("local_recursive", False):
+                    raw_files = list(local_dir.rglob("*.*"))
+                else:
+                    raw_files = list(local_dir.glob("*.*"))
+
+                image_paths = sorted([p for p in raw_files if p.suffix.lower() in IMAGE_EXTS])
+                if not image_paths:
+                    raise ValueError(f"No supported images found in: {local_dir}")
+                self.log_signal.emit(f"Found {len(image_paths)} local images.")
+
+            elif source_mode == "cvat":
+                if not self.client.is_authenticated():
+                    raise RuntimeError("CVAT is not connected. Please log in to CVAT in Step 1 first.")
+
+                src_task_id = self.cfg["cvat_src_task_id"]
+                self.log_signal.emit(f"Pulling images from CVAT Task #{src_task_id}...")
+                self.progress_signal.emit(5, 100, f"Downloading task #{src_task_id} from CVAT...")
+
+                dl_dir = work_dir / f"cvat_src_{src_task_id}"
+                dl_dir.mkdir(parents=True, exist_ok=True)
+
+                def dl_cb(cur, tot, desc):
+                    pct = int(5 + (cur / max(tot, 1)) * 25)
+                    self.progress_signal.emit(pct, 100, f"CVAT Download: {desc}")
+
+                task_dir = self.client.download_and_extract_task(
+                    task_id=src_task_id,
+                    output_dir=dl_dir,
+                    progress_callback=dl_cb
+                )
+                img_dir = task_dir / "images"
+                if not img_dir.exists():
+                    raise FileNotFoundError(f"Images folder not found in task {src_task_id} export.")
+                image_paths = sorted([p for p in img_dir.iterdir() if p.suffix.lower() in IMAGE_EXTS])
+                if not image_paths:
+                    raise ValueError(f"CVAT task #{src_task_id} contains no images.")
+                self.log_signal.emit(f"Retrieved {len(image_paths)} images from CVAT Task #{src_task_id}.")
+
+            if self.stop_requested:
+                raise InterruptedError("Cancelled by user.")
+
+            # 2. Local Model Inference
+            model_path = Path(self.cfg["model_path"])
+            self.log_signal.emit(f"Loading local model: {model_path.name}...")
+            self.progress_signal.emit(30, 100, f"Running inference with {model_path.name}...")
+
+            coco_json_path = work_dir / "annotations" / "instances_default.json"
+
+            def inf_progress(cur, tot, desc):
+                pct = int(30 + (cur / max(tot, 1)) * 40)
+                self.progress_signal.emit(pct, 100, desc)
+
+            def inf_preview(bgr_img, stats):
+                pixmap = bgr_to_qpixmap(bgr_img)
+                self.preview_signal.emit(pixmap, stats)
+
+            res = self.engine.run_inference_and_export_coco(
+                model_path=model_path,
+                image_paths=image_paths,
+                output_json_path=coco_json_path,
+                conf=self.cfg.get("conf", 0.25),
+                iou=self.cfg.get("iou", 0.45),
+                imgsz=self.cfg.get("imgsz", 640),
+                device=self.cfg.get("device", "auto"),
+                progress_callback=inf_progress,
+                preview_callback=inf_preview,
+            )
+
+            total_ann = res["total_annotations"]
+            self.log_signal.emit(f"Generated {total_ann} COCO annotations across {res['total_images']} images in {res['elapsed_seconds']}s.")
+            for cname, count in res.get("class_counts", {}).items():
+                self.log_signal.emit(f"   {cname}: {count}")
+
+            if self.stop_requested:
+                raise InterruptedError("Cancelled by user.")
+
+            # 3. CVAT Destination Upload
+            upload_to_cvat = self.cfg.get("upload_to_cvat", True)
+            if upload_to_cvat:
+                if not self.client.is_authenticated():
+                    raise RuntimeError("CVAT is not connected. Please connect to CVAT before uploading.")
+
+                self.progress_signal.emit(72, 100, "Preparing CVAT destination project and task...")
+                model_class_names = [cat["name"] for cat in res["categories"]]
+
+                # Determine Project
+                dest_proj_mode = self.cfg.get("dest_project_mode", "existing")
+                dest_proj_id = None
+
+                if dest_proj_mode == "new":
+                    pname = self.cfg.get("new_project_name", "").strip()
+                    if not pname:
+                        pname = f"AutoLabel_Project_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+                    self.log_signal.emit(f"Creating new CVAT Project: '{pname}'...")
+                    new_proj = self.client.create_project(name=pname, labels=model_class_names)
+                    dest_proj_id = new_proj["id"]
+                    self.log_signal.emit(f"Project created with ID #{dest_proj_id}")
+                elif dest_proj_mode == "existing":
+                    dest_proj_id = self.cfg.get("dest_project_id")
+                    if not dest_proj_id:
+                        raise ValueError("Please select an existing CVAT Project.")
+                    if self.cfg.get("auto_sync_labels", True):
+                        self.log_signal.emit(f"Synchronizing labels with Project #{dest_proj_id}...")
+                        self.client.sync_project_labels(dest_proj_id, model_class_names)
+
+                # Determine Task
+                dest_task_mode = self.cfg.get("dest_task_mode", "new")
+                dest_task_id = None
+                is_new_task = False
+
+                if dest_task_mode == "new":
+                    tname = self.cfg.get("new_task_name", "").strip()
+                    if not tname:
+                        tname = f"AutoLabel_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+                    self.log_signal.emit(f"Creating new CVAT Task: '{tname}'...")
+                    task_labels = model_class_names if dest_proj_id is None else None
+                    new_task = self.client.create_task(name=tname, project_id=dest_proj_id, labels=task_labels)
+                    dest_task_id = new_task["id"]
+                    is_new_task = True
+                    self.log_signal.emit(f"Task created with ID #{dest_task_id}")
+                else:
+                    dest_task_id = self.cfg.get("dest_task_id")
+                    if not dest_task_id:
+                        raise ValueError("Please select an existing CVAT Task.")
+                    if self.cfg.get("auto_sync_labels", True):
+                        self.log_signal.emit(f"Synchronizing labels with Task #{dest_task_id}...")
+                        self.client.sync_task_labels(dest_task_id, model_class_names)
+
+                if self.stop_requested:
+                    raise InterruptedError("Cancelled by user.")
+
+                # Upload Images if needed:
+                need_upload_images = is_new_task
+                if not need_upload_images and source_mode == "local":
+                    try:
+                        dtl = self.client.get_task_details(dest_task_id)
+                        if dtl.get("size", 0) == 0:
+                            need_upload_images = True
+                    except Exception:
+                        pass
+
+                if need_upload_images:
+                    self.log_signal.emit(f"Uploading {len(image_paths)} images to CVAT Task #{dest_task_id}...")
+                    def up_cb(cur, tot, desc):
+                        pct = int(75 + (cur / max(tot, 1)) * 15)
+                        self.progress_signal.emit(pct, 100, f"Uploading images ({pct}%)...")
+
+                    self.client.upload_task_images(dest_task_id, image_paths, progress_callback=up_cb)
+                    self.log_signal.emit(f"Successfully uploaded {len(image_paths)} images to Task #{dest_task_id}.")
+
+                if self.stop_requested:
+                    raise InterruptedError("Cancelled by user.")
+
+                # Import Annotations
+                self.log_signal.emit(f"Importing COCO 1.0 annotations into CVAT Task #{dest_task_id}...")
+                self.progress_signal.emit(92, 100, "Importing COCO annotations to CVAT...")
+
+                def ann_cb(cur, tot, desc):
+                    self.progress_signal.emit(96, 100, f"Importing annotations: {desc}")
+
+                self.client.import_task_annotations(dest_task_id, coco_json_path, format_name="COCO 1.0", progress_callback=ann_cb)
+                self.log_signal.emit(f"COCO annotations successfully imported into CVAT Task #{dest_task_id}!")
+
+                res["dest_project_id"] = dest_proj_id
+                res["dest_task_id"] = dest_task_id
+                res["is_new_task"] = is_new_task
+                res["uploaded_to_cvat"] = True
+
+            self.progress_signal.emit(100, 100, "Auto-labeling process completed!")
+            self.finished_signal.emit(res)
+
+        except InterruptedError:
+            self.error_signal.emit("Auto-labeling cancelled by user.")
+        except Exception as e:
+            self.error_signal.emit(str(e))
+
+
 # =====================================================================
 # Main GUI Window (Login View + Studio Connected Workflow)
 # =====================================================================
@@ -442,9 +655,10 @@ class MainWindow(QMainWindow):
         ("3. Dataset Splitter", "Train/Val/Test All Imgs"),
         ("4. YOLO Auto-Trainer", "Auto-Tune & Patience"),
         ("5. Test Model", "Image / Folder / Video"),
+        ("6. Auto Label", "Local Model → CVAT"),
     ]
 
-    STEP_DOWNLOAD, STEP_CONVERT, STEP_SPLIT, STEP_TRAIN, STEP_TEST = range(5)
+    STEP_DOWNLOAD, STEP_CONVERT, STEP_SPLIT, STEP_TRAIN, STEP_TEST, STEP_AUTOLABEL = range(6)
 
     STEP_GUIDES = [
         "Select tasks from CVAT — they are downloaded, merged into one dataset in data/ "
@@ -452,7 +666,8 @@ class MainWindow(QMainWindow):
         "Convert COCO annotations into YOLO .txt format for Detection (BBox) or Segmentation (Polygon).",
         "Partition dataset with 100% images guarantee (including unannotated background images).",
         "Intelligently auto-tune hyperparameters, train YOLO model, and inspect outputs in runs/.",
-        "Evaluate trained YOLO weights on single images, folders, or video files with visual preview."
+        "Evaluate trained YOLO weights on single images, folders, or video files with visual preview.",
+        "Pre-annotate images from Local files or CVAT with your local YOLO models, generate COCO annotations, and upload to CVAT projects/tasks."
     ]
 
     def __init__(self):
@@ -476,9 +691,12 @@ class MainWindow(QMainWindow):
         self.splitter_engine = DatasetSplitter()
         self.trainer_engine = YoloTrainerEngine()
         self.tester_engine = YoloTestEngine()
+        self.autolabel_engine = AutoLabelEngine()
 
         self.all_tasks_data: list[dict] = []
         self.active_worker = None
+        self.autolabel_worker: AutoLabelWorker | None = None
+        self.autolabel_models_list: list[dict] = []
 
         # Test state
         self.folder_test_results: list[dict] = []
@@ -760,6 +978,7 @@ class MainWindow(QMainWindow):
         for icon, tile_bg, title, sub in (
             ("step_cvat", PALETTE["lilac"], "Fetch CVAT tasks", "Download COCO 1.0 && flatten images"),
             ("step_train", PALETTE["sky"], "Train && test YOLO", "Auto-tune, early stop, preview results"),
+            ("step_autolabel", PALETTE["sage"], "Auto-label with model", "Local YOLO → COCO annotations → CVAT"),
         ):
             qc_lay.addWidget(self._make_todo_row(icon, tile_bg, title.replace("&&", "&"), sub.replace("&&", "&")))
         qc_lay.addStretch(1)
@@ -922,6 +1141,7 @@ class MainWindow(QMainWindow):
         self.pages.addWidget(self._wrap_page_scroll(self._build_page_split()))      # Step 3: Dataset Splitter
         self.pages.addWidget(self._wrap_page_scroll(self._build_page_train()))      # Step 4: YOLO Auto-Trainer
         self.pages.addWidget(self._wrap_page_scroll(self._build_page_test()))       # Step 5: Test Model
+        self.pages.addWidget(self._wrap_page_scroll(self._build_page_autolabel()))  # Step 6: Auto-Label & CVAT
         layout.addWidget(self.pages, stretch=1)
 
         # 5. Bottom Stepper Footer Navigation (< Previous | Step Pills | Next >)
@@ -1956,6 +2176,408 @@ class MainWindow(QMainWindow):
         return page
 
     # =================================================================
+    # STEP 6: Auto-Label & CVAT Upload Page
+    # =================================================================
+    def _build_page_autolabel(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(12)
+
+        # -------------------------------------------------------------
+        # Card 1: Local Model Selection & Inference Parameters
+        # -------------------------------------------------------------
+        model_card = QFrame()
+        model_card.setProperty("class", "CardFrame")
+        mc_layout = QGridLayout(model_card)
+        mc_layout.setContentsMargins(18, 16, 18, 16)
+        mc_layout.setHorizontalSpacing(14)
+        mc_layout.setVerticalSpacing(10)
+
+        # Title Row
+        title_row = QHBoxLayout()
+        icon_model = QLabel()
+        icon_model.setPixmap(get_svg_pixmap("step_autolabel", 20, 20))
+        title_row.addWidget(icon_model)
+        lbl_mtitle = QLabel("1. Local Model Selection & Detection Parameters (โมเดลในเครื่อง)")
+        lbl_mtitle.setProperty("class", "SectionTitle")
+        title_row.addWidget(lbl_mtitle)
+        title_row.addStretch()
+        mc_layout.addLayout(title_row, 0, 0, 1, 6)
+
+        # Model Weights Dropdown
+        mc_layout.addWidget(QLabel("Local Model (.pt):"), 1, 0)
+        self.cmb_auto_model = QComboBox()
+        self.cmb_auto_model.currentIndexChanged.connect(self._on_auto_model_changed)
+        mc_layout.addWidget(self.cmb_auto_model, 1, 1, 1, 4)
+
+        btn_browse_pt = QPushButton("Browse Model...")
+        btn_browse_pt.setIcon(get_svg_icon("folder", 16))
+        btn_browse_pt.setIconSize(QSize(16, 16))
+        btn_browse_pt.clicked.connect(self._browse_auto_model_file)
+        mc_layout.addWidget(btn_browse_pt, 1, 5)
+
+        # Model Info Badge
+        self.lbl_auto_model_info = QLabel("Scanning for local models...")
+        self.lbl_auto_model_info.setProperty("class", "MutedText")
+        mc_layout.addWidget(self.lbl_auto_model_info, 2, 1, 1, 5)
+
+        # Parameters Row: Confidence & IoU
+        mc_layout.addWidget(QLabel("Confidence (conf):"), 3, 0)
+        self.slider_auto_conf = QSlider(Qt.Horizontal)
+        self.slider_auto_conf.setRange(5, 100)
+        self.slider_auto_conf.setValue(25)
+        mc_layout.addWidget(self.slider_auto_conf, 3, 1)
+
+        self.spin_auto_conf = QDoubleSpinBox()
+        self.spin_auto_conf.setRange(0.05, 1.0)
+        self.spin_auto_conf.setSingleStep(0.05)
+        self.spin_auto_conf.setValue(0.25)
+        self.slider_auto_conf.valueChanged.connect(lambda v: self.spin_auto_conf.setValue(v / 100.0))
+        self.spin_auto_conf.valueChanged.connect(lambda v: self.slider_auto_conf.setValue(int(v * 100)))
+        mc_layout.addWidget(self.spin_auto_conf, 3, 2)
+
+        mc_layout.addWidget(QLabel("IoU Threshold:"), 3, 3)
+        self.slider_auto_iou = QSlider(Qt.Horizontal)
+        self.slider_auto_iou.setRange(10, 100)
+        self.slider_auto_iou.setValue(45)
+        mc_layout.addWidget(self.slider_auto_iou, 3, 4)
+
+        self.spin_auto_iou = QDoubleSpinBox()
+        self.spin_auto_iou.setRange(0.1, 1.0)
+        self.spin_auto_iou.setSingleStep(0.05)
+        self.spin_auto_iou.setValue(0.45)
+        self.slider_auto_iou.valueChanged.connect(lambda v: self.spin_auto_iou.setValue(v / 100.0))
+        self.spin_auto_iou.valueChanged.connect(lambda v: self.slider_auto_iou.setValue(int(v * 100)))
+        mc_layout.addWidget(self.spin_auto_iou, 3, 5)
+
+        # Row 4: Device & Image Size
+        mc_layout.addWidget(QLabel("Compute Device:"), 4, 0)
+        self.cmb_auto_device = QComboBox()
+        self.cmb_auto_device.addItem("Auto", "auto")
+        self.cmb_auto_device.addItem("CPU", "cpu")
+        if torch.cuda.is_available():
+            self.cmb_auto_device.addItem(f"GPU ({torch.cuda.get_device_name(0)})", "cuda")
+            self.cmb_auto_device.setCurrentIndex(2)
+        else:
+            self.cmb_auto_device.addItem("GPU (CUDA - Not available)", "cpu")
+        mc_layout.addWidget(self.cmb_auto_device, 4, 1, 1, 2)
+
+        mc_layout.addWidget(QLabel("Image Size (imgsz):"), 4, 3)
+        self.cmb_auto_imgsz = QComboBox()
+        for sz in [640, 320, 960, 1280]:
+            self.cmb_auto_imgsz.addItem(f"{sz} x {sz}", sz)
+        mc_layout.addWidget(self.cmb_auto_imgsz, 4, 4, 1, 2)
+
+        layout.addWidget(model_card)
+
+        # -------------------------------------------------------------
+        # Two-Column Section: Source (Left) & Destination (Right)
+        # -------------------------------------------------------------
+        cols_box = QHBoxLayout()
+        cols_box.setSpacing(12)
+
+        # LEFT: Image Source Card
+        src_card = QFrame()
+        src_card.setProperty("class", "CardFrame")
+        sc_layout = QVBoxLayout(src_card)
+        sc_layout.setContentsMargins(18, 16, 18, 16)
+        sc_layout.setSpacing(10)
+
+        src_title_row = QHBoxLayout()
+        src_icon = QLabel()
+        src_icon.setPixmap(get_svg_pixmap("image", 18, 18))
+        src_title_row.addWidget(src_icon)
+        lbl_stitle = QLabel("2. Image Source (แหล่งที่มารูปภาพ)")
+        lbl_stitle.setProperty("class", "SectionTitle")
+        src_title_row.addWidget(lbl_stitle)
+        src_title_row.addStretch()
+        sc_layout.addLayout(src_title_row)
+
+        # Source Radio Group
+        src_radio_row = QHBoxLayout()
+        self.rb_auto_src_local = QRadioButton("Local Folder (จากเครื่อง)")
+        self.rb_auto_src_cvat = QRadioButton("CVAT Task (จาก CVAT)")
+        self.rb_auto_src_local.setChecked(True)
+
+        self.grp_auto_src = QButtonGroup(self)
+        self.grp_auto_src.addButton(self.rb_auto_src_local, 0)
+        self.grp_auto_src.addButton(self.rb_auto_src_cvat, 1)
+        self.grp_auto_src.buttonToggled.connect(self._on_auto_source_mode_changed)
+
+        src_radio_row.addWidget(self.rb_auto_src_local)
+        src_radio_row.addWidget(self.rb_auto_src_cvat)
+        src_radio_row.addStretch()
+        sc_layout.addLayout(src_radio_row)
+
+        # Local Source Container
+        self.box_auto_src_local = QWidget()
+        local_vbox = QVBoxLayout(self.box_auto_src_local)
+        local_vbox.setContentsMargins(0, 4, 0, 0)
+        local_vbox.setSpacing(8)
+
+        local_path_row = QHBoxLayout()
+        self.txt_auto_local_path = QLineEdit()
+        self.txt_auto_local_path.setPlaceholderText("Select folder with images (.jpg, .png, etc.)...")
+        self.txt_auto_local_path.textChanged.connect(self._update_local_images_count)
+        local_path_row.addWidget(self.txt_auto_local_path, stretch=1)
+
+        btn_browse_local = QPushButton("Browse Folder...")
+        btn_browse_local.setIcon(get_svg_icon("folder", 16))
+        btn_browse_local.setIconSize(QSize(16, 16))
+        btn_browse_local.clicked.connect(self._browse_auto_local_folder)
+        local_path_row.addWidget(btn_browse_local)
+        local_vbox.addLayout(local_path_row)
+
+        local_opt_row = QHBoxLayout()
+        self.chk_auto_local_subfolders = QCheckBox("Scan subfolders recursively")
+        self.chk_auto_local_subfolders.toggled.connect(self._update_local_images_count)
+        local_opt_row.addWidget(self.chk_auto_local_subfolders)
+        local_opt_row.addStretch()
+        self.lbl_auto_local_count = QLabel("No images selected")
+        self.lbl_auto_local_count.setProperty("class", "MutedText")
+        local_opt_row.addWidget(self.lbl_auto_local_count)
+        local_vbox.addLayout(local_opt_row)
+
+        sc_layout.addWidget(self.box_auto_src_local)
+
+        # CVAT Source Container
+        self.box_auto_src_cvat = QWidget()
+        cvat_vbox = QVBoxLayout(self.box_auto_src_cvat)
+        cvat_vbox.setContentsMargins(0, 4, 0, 0)
+        cvat_vbox.setSpacing(8)
+
+        cvat_filter_row = QHBoxLayout()
+        cvat_filter_row.addWidget(QLabel("Project Filter:"))
+        self.cmb_auto_src_cvat_proj = QComboBox()
+        self.cmb_auto_src_cvat_proj.currentIndexChanged.connect(self._on_auto_src_cvat_proj_selection_changed)
+        cvat_filter_row.addWidget(self.cmb_auto_src_cvat_proj, stretch=1)
+        btn_refresh_src_cvat = QPushButton("Refresh")
+        btn_refresh_src_cvat.setIcon(get_svg_icon("refresh", 14))
+        btn_refresh_src_cvat.setIconSize(QSize(14, 14))
+        btn_refresh_src_cvat.clicked.connect(self._refresh_autolabel_cvat_lists)
+        cvat_filter_row.addWidget(btn_refresh_src_cvat)
+        cvat_vbox.addLayout(cvat_filter_row)
+
+        cvat_task_row = QHBoxLayout()
+        cvat_task_row.addWidget(QLabel("Source Task:"))
+        self.cmb_auto_src_cvat_task = QComboBox()
+        cvat_task_row.addWidget(self.cmb_auto_src_cvat_task, stretch=1)
+        cvat_vbox.addLayout(cvat_task_row)
+
+        lbl_cvat_note = QLabel("ℹ Images will be exported from this CVAT task to run auto-annotation.")
+        lbl_cvat_note.setProperty("class", "MutedText")
+        cvat_vbox.addWidget(lbl_cvat_note)
+
+        sc_layout.addWidget(self.box_auto_src_cvat)
+        self.box_auto_src_cvat.setVisible(False)
+        sc_layout.addStretch()
+
+        cols_box.addWidget(src_card, 1)
+
+        # RIGHT: CVAT Target / Destination Card
+        dest_card = QFrame()
+        dest_card.setProperty("class", "CardFrame")
+        dc_layout = QVBoxLayout(dest_card)
+        dc_layout.setContentsMargins(18, 16, 18, 16)
+        dc_layout.setSpacing(10)
+
+        dest_title_row = QHBoxLayout()
+        dest_icon = QLabel()
+        dest_icon.setPixmap(get_svg_pixmap("upload", 18, 18))
+        dest_title_row.addWidget(dest_icon)
+        lbl_dtitle = QLabel("3. Destination in CVAT (เป้าหมายปลายทาง)")
+        lbl_dtitle.setProperty("class", "SectionTitle")
+        dest_title_row.addWidget(lbl_dtitle)
+        dest_title_row.addStretch()
+
+        self.lbl_auto_cvat_badge = QLabel("Not Connected")
+        dest_title_row.addWidget(self.lbl_auto_cvat_badge)
+        dc_layout.addLayout(dest_title_row)
+
+        # Upload Checkbox
+        self.chk_auto_upload_cvat = QCheckBox("Upload to CVAT server")
+        self.chk_auto_upload_cvat.setChecked(True)
+        self.chk_auto_upload_cvat.toggled.connect(self._on_auto_upload_cvat_toggled)
+        dc_layout.addWidget(self.chk_auto_upload_cvat)
+
+        # Destination Project Section
+        dc_layout.addWidget(QLabel("Target Project:"))
+        proj_mode_row = QHBoxLayout()
+        self.rb_dest_proj_existing = QRadioButton("Existing Project")
+        self.rb_dest_proj_new = QRadioButton("Create New Project")
+        self.rb_dest_proj_none = QRadioButton("No Project")
+        self.rb_dest_proj_existing.setChecked(True)
+
+        self.grp_dest_proj = QButtonGroup(self)
+        self.grp_dest_proj.addButton(self.rb_dest_proj_existing, 0)
+        self.grp_dest_proj.addButton(self.rb_dest_proj_new, 1)
+        self.grp_dest_proj.addButton(self.rb_dest_proj_none, 2)
+        self.grp_dest_proj.buttonToggled.connect(self._on_auto_dest_proj_mode_changed)
+
+        proj_mode_row.addWidget(self.rb_dest_proj_existing)
+        proj_mode_row.addWidget(self.rb_dest_proj_new)
+        proj_mode_row.addWidget(self.rb_dest_proj_none)
+        proj_mode_row.addStretch()
+        dc_layout.addLayout(proj_mode_row)
+
+        proj_input_row = QHBoxLayout()
+        self.cmb_auto_dest_proj = QComboBox()
+        self.cmb_auto_dest_proj.currentIndexChanged.connect(self._on_auto_dest_proj_selection_changed)
+        proj_input_row.addWidget(self.cmb_auto_dest_proj, stretch=1)
+
+        self.txt_auto_dest_new_proj = QLineEdit()
+        self.txt_auto_dest_new_proj.setPlaceholderText("Enter new project name (e.g. My_Project)...")
+        self.txt_auto_dest_new_proj.setVisible(False)
+        proj_input_row.addWidget(self.txt_auto_dest_new_proj, stretch=1)
+        dc_layout.addLayout(proj_input_row)
+
+        # Destination Task Section
+        dc_layout.addWidget(QLabel("Target Task:"))
+        task_mode_row = QHBoxLayout()
+        self.rb_dest_task_existing = QRadioButton("Existing Task")
+        self.rb_dest_task_new = QRadioButton("Create New Task")
+        self.rb_dest_task_new.setChecked(True)
+
+        self.grp_dest_task = QButtonGroup(self)
+        self.grp_dest_task.addButton(self.rb_dest_task_existing, 0)
+        self.grp_dest_task.addButton(self.rb_dest_task_new, 1)
+        self.grp_dest_task.buttonToggled.connect(self._on_auto_dest_task_mode_changed)
+
+        task_mode_row.addWidget(self.rb_dest_task_existing)
+        task_mode_row.addWidget(self.rb_dest_task_new)
+        task_mode_row.addStretch()
+        dc_layout.addLayout(task_mode_row)
+
+        task_input_row = QHBoxLayout()
+        self.cmb_auto_dest_task = QComboBox()
+        self.cmb_auto_dest_task.setVisible(False)
+        task_input_row.addWidget(self.cmb_auto_dest_task, stretch=1)
+
+        self.txt_auto_dest_new_task = QLineEdit()
+        self.txt_auto_dest_new_task.setPlaceholderText("Enter new task name...")
+        task_input_row.addWidget(self.txt_auto_dest_new_task, stretch=1)
+        dc_layout.addLayout(task_input_row)
+
+        # Options
+        self.chk_auto_sync_labels = QCheckBox("Auto-sync missing model classes to CVAT labels")
+        self.chk_auto_sync_labels.setChecked(True)
+        dc_layout.addWidget(self.chk_auto_sync_labels)
+
+        lbl_up_note = QLabel("ℹ If source is Local, images will be uploaded along with annotations.")
+        lbl_up_note.setProperty("class", "MutedText")
+        dc_layout.addWidget(lbl_up_note)
+        dc_layout.addStretch()
+
+        cols_box.addWidget(dest_card, 1)
+        layout.addLayout(cols_box)
+
+        # -------------------------------------------------------------
+        # Card 3: Execution, Live Preview & Activity Log
+        # -------------------------------------------------------------
+        exec_card = QFrame()
+        exec_card.setProperty("class", "CardFrame")
+        ec_layout = QVBoxLayout(exec_card)
+        ec_layout.setContentsMargins(18, 16, 18, 16)
+        ec_layout.setSpacing(10)
+
+        # Action Button Row
+        btn_row = QHBoxLayout()
+        self.btn_run_autolabel = QPushButton("Start Auto-Label & Upload to CVAT")
+        self.btn_run_autolabel.setProperty("class", "PrimaryButton")
+        self.btn_run_autolabel.setIcon(get_svg_icon("play", 18))
+        self.btn_run_autolabel.setIconSize(QSize(18, 18))
+        self.btn_run_autolabel.setFixedHeight(40)
+        self.btn_run_autolabel.clicked.connect(self._on_start_autolabel)
+        btn_row.addWidget(self.btn_run_autolabel, stretch=2)
+
+        self.btn_stop_autolabel = QPushButton("Stop")
+        self.btn_stop_autolabel.setProperty("class", "DangerButton")
+        self.btn_stop_autolabel.setIcon(get_svg_icon("stop", 16))
+        self.btn_stop_autolabel.setIconSize(QSize(16, 16))
+        self.btn_stop_autolabel.setFixedHeight(40)
+        self.btn_stop_autolabel.setEnabled(False)
+        self.btn_stop_autolabel.clicked.connect(self._on_stop_autolabel)
+        btn_row.addWidget(self.btn_stop_autolabel, stretch=1)
+
+        self.btn_open_autolabel_folder = QPushButton("Open Output Folder")
+        self.btn_open_autolabel_folder.setProperty("class", "SecondaryNavButton")
+        self.btn_open_autolabel_folder.setIcon(get_svg_icon("folder", 16))
+        self.btn_open_autolabel_folder.setIconSize(QSize(16, 16))
+        self.btn_open_autolabel_folder.setFixedHeight(40)
+        self.btn_open_autolabel_folder.clicked.connect(self._open_autolabel_dir)
+        btn_row.addWidget(self.btn_open_autolabel_folder)
+        ec_layout.addLayout(btn_row)
+
+        # Progress bar & status
+        self.prog_autolabel = QProgressBar()
+        self.prog_autolabel.setRange(0, 100)
+        self.prog_autolabel.setValue(0)
+        self.prog_autolabel.setFixedHeight(12)
+        ec_layout.addWidget(self.prog_autolabel)
+
+        self.lbl_autolabel_status = QLabel("Ready to annotate images.")
+        self.lbl_autolabel_status.setProperty("class", "MutedText")
+        ec_layout.addWidget(self.lbl_autolabel_status)
+
+        # Splitter: Left Preview Canvas | Right Activity Log
+        mon_splitter = QSplitter(Qt.Horizontal)
+
+        # Preview Container
+        preview_box = QFrame()
+        preview_box.setStyleSheet("background: #141f2e; border: 1px solid #23344d; border-radius: 6px;")
+        pv_layout = QVBoxLayout(preview_box)
+        pv_layout.setContentsMargins(10, 8, 10, 8)
+        pv_layout.setSpacing(6)
+
+        pv_head = QHBoxLayout()
+        pv_head.addWidget(QLabel("<b style='color:#e5ebf3;'>Live Detection Preview</b>"))
+        pv_head.addStretch()
+        self.lbl_autolabel_preview_info = QLabel("")
+        self.lbl_autolabel_preview_info.setStyleSheet("color: #9fb6d4; font-size: 11px;")
+        pv_head.addWidget(self.lbl_autolabel_preview_info)
+        pv_layout.addLayout(pv_head)
+
+        self.lbl_autolabel_preview = QLabel("Live preview will appear here during inference...")
+        self.lbl_autolabel_preview.setAlignment(Qt.AlignCenter)
+        self.lbl_autolabel_preview.setMinimumSize(420, 260)
+        self.lbl_autolabel_preview.setStyleSheet("color: #6a7c92; font-style: italic;")
+        pv_layout.addWidget(self.lbl_autolabel_preview, stretch=1)
+        mon_splitter.addWidget(preview_box)
+
+        # Log Container
+        log_box = QFrame()
+        log_box.setStyleSheet("background: #1a2638; border: 1px solid #23344d; border-radius: 6px;")
+        lv_layout = QVBoxLayout(log_box)
+        lv_layout.setContentsMargins(10, 8, 10, 8)
+        lv_layout.setSpacing(6)
+
+        log_head = QHBoxLayout()
+        log_head.addWidget(QLabel("<b style='color:#e5ebf3;'>Process & Upload Activity Log</b>"))
+        log_head.addStretch()
+        btn_clear_log = QPushButton("Clear")
+        btn_clear_log.setStyleSheet("background: transparent; color: #9fb6d4; border: none; font-size: 11px;")
+        btn_clear_log.setCursor(Qt.PointingHandCursor)
+        btn_clear_log.clicked.connect(lambda: self.txt_autolabel_log.clear())
+        log_head.addWidget(btn_clear_log)
+        lv_layout.addLayout(log_head)
+
+        self.txt_autolabel_log = QPlainTextEdit()
+        self.txt_autolabel_log.setReadOnly(True)
+        self.txt_autolabel_log.setStyleSheet(
+            "background: #141f2e; color: #d8e2ee; border: none; font-family: 'Consolas', monospace; font-size: 11px;"
+        )
+        lv_layout.addWidget(self.txt_autolabel_log, stretch=1)
+        mon_splitter.addWidget(log_box)
+
+        mon_splitter.setSizes([550, 450])
+        ec_layout.addWidget(mon_splitter, stretch=1)
+
+        layout.addWidget(exec_card, stretch=1)
+
+        return page
+
+    # =================================================================
     # Studio Navigation & Pipeline Slots
     # =================================================================
     def _open_dir(self, dir_path: Path):
@@ -2016,10 +2638,13 @@ class MainWindow(QMainWindow):
             self._refresh_yaml_preview()
             self._update_run_preview()
 
-        # Pre-fill model path if going to Test (Step 6 / index 5)
+        # Pre-fill model path if going to Test (Step 5)
         if step_idx == self.STEP_TEST and self.last_trained_weight and self.last_trained_weight.exists():
             if not self.txt_test_model.text().strip():
                 self.txt_test_model.setText(str(self.last_trained_weight))
+
+        if step_idx == self.STEP_AUTOLABEL:
+            self._on_enter_autolabel_page()
 
     def _on_prev_step(self):
         cur = self.pages.currentIndex()
@@ -2087,6 +2712,7 @@ class MainWindow(QMainWindow):
         self.all_tasks_data = tasks
         self._populate_tasks_table(self.all_tasks_data)
         self.lbl_cvat_status.setText(f"Loaded {len(tasks)} tasks across {len(projects)} projects.")
+        self._refresh_autolabel_cvat_lists()
 
         # Switch smoothly to Studio view!
         self.root_stack.setCurrentIndex(1)
@@ -3543,3 +4169,419 @@ class MainWindow(QMainWindow):
         if f:
             self.txt_data_yaml.setText(f)
             self._refresh_yaml_preview()
+
+    # =================================================================
+    # STEP 6: Auto-Label Slots & Handlers
+    # =================================================================
+    def _on_enter_autolabel_page(self):
+        """Called whenever user switches to Step 6 (Auto-Label)."""
+        self._populate_autolabel_models()
+        self._refresh_autolabel_cvat_lists()
+
+        # Generate a default timestamped task name if empty
+        if not self.txt_auto_dest_new_task.text().strip():
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            self.txt_auto_dest_new_task.setText(f"autolabel_{ts}")
+
+    def _populate_autolabel_models(self):
+        """Discovers local models and populates the model dropdown."""
+        cur_data = self.cmb_auto_model.currentData()
+        self.cmb_auto_model.blockSignals(True)
+        self.cmb_auto_model.clear()
+
+        self.autolabel_models_list = scan_local_models(self.app_dir)
+
+        # If a newly trained weight exists, ensure it is in the list
+        if self.last_trained_weight and self.last_trained_weight.exists():
+            ltw_res = self.last_trained_weight.resolve()
+            if not any(m["path"] == ltw_res for m in self.autolabel_models_list):
+                self.autolabel_models_list.insert(0, {
+                    "path": ltw_res,
+                    "name": self.last_trained_weight.name,
+                    "category": "Latest Trained",
+                    "display": f"{self.last_trained_weight.name} [Latest Trained]",
+                    "size_mb": round(ltw_res.stat().st_size / (1024 * 1024), 1) if ltw_res.exists() else 0.0,
+                    "rel_path": str(self.last_trained_weight),
+                })
+
+        for m in self.autolabel_models_list:
+            self.cmb_auto_model.addItem(m["display"], m["path"])
+
+        self.cmb_auto_model.addItem("[Browse Custom Model File...]", None)
+
+        # Restore previous selection or select first
+        target_idx = 0
+        if cur_data:
+            for i in range(self.cmb_auto_model.count()):
+                if self.cmb_auto_model.itemData(i) == cur_data:
+                    target_idx = i
+                    break
+        elif self.last_trained_weight and self.last_trained_weight.exists():
+            for i in range(self.cmb_auto_model.count()):
+                if self.cmb_auto_model.itemData(i) == self.last_trained_weight.resolve():
+                    target_idx = i
+                    break
+
+        self.cmb_auto_model.setCurrentIndex(target_idx)
+        self.cmb_auto_model.blockSignals(False)
+        self._on_auto_model_changed(target_idx)
+
+    def _on_auto_model_changed(self, idx: int):
+        """Called when user selects a model in the dropdown."""
+        model_path = self.cmb_auto_model.itemData(idx)
+        if model_path is None:
+            # User clicked "[Browse Custom Model File...]"
+            self._browse_auto_model_file()
+            return
+
+        p = Path(model_path)
+        if not p.exists():
+            self.lbl_auto_model_info.setText(f"File not found: {p.name}")
+            return
+
+        meta = inspect_model_metadata(p)
+        if meta["status"] == "success":
+            task_type = meta["task"].capitalize()
+            num_cls = meta["num_classes"]
+            classes_preview = ", ".join(meta["classes_list"][:6])
+            if num_cls > 6:
+                classes_preview += f" ... (+{num_cls - 6} more)"
+            self.lbl_auto_model_info.setText(f"Task: {task_type} • {num_cls} Classes: {classes_preview}")
+        else:
+            self.lbl_auto_model_info.setText(f"Model: {p.name} (unable to read classes: {meta.get('error', '')[:80]})")
+
+    def _browse_auto_model_file(self):
+        """Opens file dialog for custom YOLO weights."""
+        start = str(self.models_dir if self.models_dir.exists() else self.app_dir)
+        f, _ = QFileDialog.getOpenFileName(self, "Select YOLO Model (.pt)", start, "PyTorch Weights (*.pt)")
+        if f:
+            p = Path(f).resolve()
+            # Insert into combo box if not present
+            found_idx = -1
+            for i in range(self.cmb_auto_model.count()):
+                if self.cmb_auto_model.itemData(i) == p:
+                    found_idx = i
+                    break
+            if found_idx == -1:
+                disp = f"{p.name} [Custom] ({round(p.stat().st_size / (1024 * 1024), 1)} MB)"
+                self.cmb_auto_model.insertItem(0, disp, p)
+                found_idx = 0
+
+            self.cmb_auto_model.setCurrentIndex(found_idx)
+
+    def _browse_auto_local_folder(self):
+        """Opens folder dialog to pick local images folder."""
+        start = self.txt_auto_local_path.text().strip() or str(self.data_dir)
+        folder = QFileDialog.getExistingDirectory(self, "Select Images Folder", start)
+        if folder:
+            self.txt_auto_local_path.setText(folder)
+            self._update_local_images_count()
+
+    def _update_local_images_count(self):
+        """Updates count of images in selected local folder."""
+        folder_str = self.txt_auto_local_path.text().strip()
+        if not folder_str:
+            self.lbl_auto_local_count.setText("No folder selected")
+            return
+
+        p = Path(folder_str)
+        if not p.is_dir():
+            self.lbl_auto_local_count.setText("Invalid directory")
+            return
+
+        try:
+            if self.chk_auto_local_subfolders.isChecked():
+                files = list(p.rglob("*.*"))
+            else:
+                files = list(p.glob("*.*"))
+
+            imgs = [f for f in files if f.suffix.lower() in IMAGE_EXTS]
+            self.lbl_auto_local_count.setText(f"Found {len(imgs)} images ready for annotation.")
+        except Exception as e:
+            self.lbl_auto_local_count.setText(f"Error scanning: {e}")
+
+    def _refresh_autolabel_cvat_lists(self):
+        """Updates CVAT connection status badge and populates project/task dropdowns."""
+        is_auth = self.cvat_client.is_authenticated()
+        if is_auth:
+            user = self.cvat_client.username or "User"
+            server = self.cvat_client.server_url
+            self.lbl_auto_cvat_badge.setText(f"<span style='color:#2f6b3d; font-weight:600;'>● Connected:</span> {user} @ {server}")
+        else:
+            self.lbl_auto_cvat_badge.setText("<span style='color:#b03548; font-weight:600;'>○ Not Connected</span> (Local export only)")
+
+        # Populate Source CVAT Projects
+        self.cmb_auto_src_cvat_proj.blockSignals(True)
+        self.cmb_auto_src_cvat_proj.clear()
+        self.cmb_auto_src_cvat_proj.addItem("All Projects", None)
+
+        # Populate Destination CVAT Projects
+        self.cmb_auto_dest_proj.blockSignals(True)
+        self.cmb_auto_dest_proj.clear()
+
+        if is_auth and self.cvat_client.projects_cache:
+            for p_id, p_name in sorted(self.cvat_client.projects_cache.items()):
+                self.cmb_auto_src_cvat_proj.addItem(f"[{p_id}] {p_name}", p_id)
+                self.cmb_auto_dest_proj.addItem(f"[{p_id}] {p_name}", p_id)
+
+        self.cmb_auto_src_cvat_proj.blockSignals(False)
+        self.cmb_auto_dest_proj.blockSignals(False)
+
+        # Populate Tasks dropdowns
+        self._on_auto_src_cvat_proj_selection_changed()
+        self._on_auto_dest_proj_selection_changed()
+
+    def _on_auto_source_mode_changed(self):
+        """Toggles between Local Folder and CVAT Task sourcing."""
+        is_local = self.rb_auto_src_local.isChecked()
+        self.box_auto_src_local.setVisible(is_local)
+        self.box_auto_src_cvat.setVisible(not is_local)
+
+    def _on_auto_upload_cvat_toggled(self, checked: bool):
+        """Toggles CVAT destination options."""
+        self.rb_dest_proj_existing.setEnabled(checked)
+        self.rb_dest_proj_new.setEnabled(checked)
+        self.rb_dest_proj_none.setEnabled(checked)
+        self.cmb_auto_dest_proj.setEnabled(checked and self.rb_dest_proj_existing.isChecked())
+        self.txt_auto_dest_new_proj.setEnabled(checked and self.rb_dest_proj_new.isChecked())
+
+        self.rb_dest_task_existing.setEnabled(checked and not self.rb_dest_proj_new.isChecked())
+        self.rb_dest_task_new.setEnabled(checked)
+        self.cmb_auto_dest_task.setEnabled(checked and self.rb_dest_task_existing.isChecked())
+        self.txt_auto_dest_new_task.setEnabled(checked and self.rb_dest_task_new.isChecked())
+        self.chk_auto_sync_labels.setEnabled(checked)
+
+        if checked:
+            self.btn_run_autolabel.setText("Start Auto-Label & Upload to CVAT")
+        else:
+            self.btn_run_autolabel.setText("Run Auto-Label (Local COCO Export Only)")
+
+    def _on_auto_dest_proj_mode_changed(self):
+        """Toggles Project target: existing / new / none."""
+        is_new = self.rb_dest_proj_new.isChecked()
+        is_existing = self.rb_dest_proj_existing.isChecked()
+
+        self.cmb_auto_dest_proj.setVisible(is_existing)
+        self.cmb_auto_dest_proj.setEnabled(is_existing)
+        self.txt_auto_dest_new_proj.setVisible(is_new)
+        self.txt_auto_dest_new_proj.setEnabled(is_new)
+
+        if is_new:
+            # If creating a new project, the task MUST be a new task
+            self.rb_dest_task_new.setChecked(True)
+            self.rb_dest_task_existing.setEnabled(False)
+        else:
+            self.rb_dest_task_existing.setEnabled(True)
+
+        self._on_auto_dest_task_mode_changed()
+
+    def _on_auto_dest_task_mode_changed(self):
+        """Toggles Task target: existing / new."""
+        is_new = self.rb_dest_task_new.isChecked()
+        self.cmb_auto_dest_task.setVisible(not is_new)
+        self.cmb_auto_dest_task.setEnabled(not is_new)
+        self.txt_auto_dest_new_task.setVisible(is_new)
+        self.txt_auto_dest_new_task.setEnabled(is_new)
+
+    def _on_auto_src_cvat_proj_selection_changed(self):
+        """Filters source CVAT task dropdown by chosen project."""
+        p_id = self.cmb_auto_src_cvat_proj.currentData()
+        self.cmb_auto_src_cvat_task.blockSignals(True)
+        self.cmb_auto_src_cvat_task.clear()
+
+        for t in self.all_tasks_data:
+            if p_id is not None and t.get("project_id") != p_id:
+                continue
+            sz = t.get("size", 0)
+            self.cmb_auto_src_cvat_task.addItem(f"[{t['id']}] {t['name']} ({sz} imgs)", t["id"])
+
+        self.cmb_auto_src_cvat_task.blockSignals(False)
+
+    def _on_auto_dest_proj_selection_changed(self):
+        """Filters destination CVAT task dropdown by chosen project."""
+        p_id = self.cmb_auto_dest_proj.currentData()
+        self.cmb_auto_dest_task.blockSignals(True)
+        self.cmb_auto_dest_task.clear()
+
+        for t in self.all_tasks_data:
+            if p_id is not None and t.get("project_id") != p_id:
+                continue
+            sz = t.get("size", 0)
+            self.cmb_auto_dest_task.addItem(f"[{t['id']}] {t['name']} ({sz} imgs)", t["id"])
+
+        self.cmb_auto_dest_task.blockSignals(False)
+
+    def _on_start_autolabel(self):
+        """Validates configuration and launches the background AutoLabelWorker."""
+        # 1. Model Check
+        model_idx = self.cmb_auto_model.currentIndex()
+        model_path = self.cmb_auto_model.itemData(model_idx)
+        if not model_path or not Path(model_path).exists():
+            QMessageBox.warning(self, "Model Required", "Please select a valid YOLO model (.pt).")
+            return
+
+        # 2. Source Check
+        source_mode = "local" if self.rb_auto_src_local.isChecked() else "cvat"
+        local_dir = self.txt_auto_local_path.text().strip()
+        local_recursive = self.chk_auto_local_subfolders.isChecked()
+        cvat_src_task_id = self.cmb_auto_src_cvat_task.currentData()
+
+        if source_mode == "local":
+            if not local_dir or not Path(local_dir).is_dir():
+                QMessageBox.warning(self, "Local Directory Required", "Please select a valid local folder containing images.")
+                return
+        else:
+            if not self.cvat_client.is_authenticated():
+                QMessageBox.warning(self, "CVAT Not Connected", "Please connect to CVAT in Step 1 before pulling images.")
+                return
+            if not cvat_src_task_id:
+                QMessageBox.warning(self, "Source Task Required", "Please select a CVAT task to pull images from.")
+                return
+
+        # 3. Target Check
+        upload_cvat = self.chk_auto_upload_cvat.isChecked()
+        dest_proj_mode = "existing" if self.rb_dest_proj_existing.isChecked() else ("new" if self.rb_dest_proj_new.isChecked() else "none")
+        dest_proj_id = self.cmb_auto_dest_proj.currentData()
+        new_proj_name = self.txt_auto_dest_new_proj.text().strip()
+
+        dest_task_mode = "new" if self.rb_dest_task_new.isChecked() else "existing"
+        dest_task_id = self.cmb_auto_dest_task.currentData()
+        new_task_name = self.txt_auto_dest_new_task.text().strip()
+
+        if upload_cvat:
+            if not self.cvat_client.is_authenticated():
+                QMessageBox.warning(self, "CVAT Not Connected", "Please connect to CVAT in Step 1 before uploading.")
+                return
+
+            if dest_proj_mode == "new" and not new_proj_name:
+                QMessageBox.warning(self, "Project Name Required", "Please enter a name for the new project.")
+                return
+            elif dest_proj_mode == "existing" and not dest_proj_id:
+                QMessageBox.warning(self, "Project Selection Required", "Please select an existing CVAT project.")
+                return
+
+            if dest_task_mode == "new" and not new_task_name:
+                QMessageBox.warning(self, "Task Name Required", "Please enter a name for the new task.")
+                return
+            elif dest_task_mode == "existing" and not dest_task_id:
+                QMessageBox.warning(self, "Task Selection Required", "Please select an existing CVAT task.")
+                return
+
+        config = {
+            "model_path": Path(model_path),
+            "conf": self.spin_auto_conf.value(),
+            "iou": self.spin_auto_iou.value(),
+            "device": self.cmb_auto_device.currentData(),
+            "imgsz": self.cmb_auto_imgsz.currentData(),
+            "source_mode": source_mode,
+            "local_dir": Path(local_dir) if local_dir else None,
+            "local_recursive": local_recursive,
+            "cvat_src_task_id": cvat_src_task_id,
+            "upload_to_cvat": upload_cvat,
+            "dest_project_mode": dest_proj_mode,
+            "dest_project_id": dest_proj_id,
+            "new_project_name": new_proj_name,
+            "dest_task_mode": dest_task_mode,
+            "dest_task_id": dest_task_id,
+            "new_task_name": new_task_name,
+            "auto_sync_labels": self.chk_auto_sync_labels.isChecked(),
+            "work_dir": self.data_dir / "_autolabel",
+        }
+
+        # Update UI Controls
+        self.btn_run_autolabel.setEnabled(False)
+        self.btn_stop_autolabel.setEnabled(True)
+        self.prog_autolabel.setValue(0)
+        self.txt_autolabel_log.clear()
+        self.lbl_autolabel_status.setText("Starting auto-labeling process...")
+        self.studio_mascot.set_state(DancingSvgMascot.STATE_DOWNLOADING)
+
+        # Launch Worker Thread
+        self.autolabel_worker = AutoLabelWorker(self.cvat_client, self.autolabel_engine, config)
+        self.autolabel_worker.progress_signal.connect(self._on_autolabel_progress)
+        self.autolabel_worker.preview_signal.connect(self._on_autolabel_preview)
+        self.autolabel_worker.log_signal.connect(self._on_autolabel_log)
+        self.autolabel_worker.finished_signal.connect(self._on_autolabel_finished)
+        self.autolabel_worker.error_signal.connect(self._on_autolabel_error)
+        self.autolabel_worker.start()
+
+    def _on_stop_autolabel(self):
+        """Signals worker to stop inference."""
+        if self.autolabel_worker and self.autolabel_worker.isRunning():
+            self.lbl_autolabel_status.setText("Stopping auto-label process...")
+            self.autolabel_worker.stop()
+            self.btn_stop_autolabel.setEnabled(False)
+
+    def _on_autolabel_progress(self, cur: int, tot: int, desc: str):
+        pct = int((cur / max(tot, 1)) * 100) if tot > 0 else cur
+        self.prog_autolabel.setValue(pct)
+        self.lbl_autolabel_status.setText(f"[{pct}%] {desc}")
+
+    def _on_autolabel_preview(self, pixmap: QPixmap, stats: dict):
+        if pixmap.isNull():
+            return
+        target_size = self.lbl_autolabel_preview.size()
+        scaled = pixmap.scaled(
+            target_size,
+            Qt.KeepAspectRatio,
+            Qt.SmoothTransformation
+        )
+        self.lbl_autolabel_preview.setPixmap(scaled)
+        img_idx = stats.get("image_index", 0)
+        tot = stats.get("total_images", 0)
+        dets = stats.get("detections", 0)
+        fname = stats.get("image_name", "")
+        self.lbl_autolabel_preview_info.setText(f"{fname} ({img_idx}/{tot}) — {dets} objects")
+
+    def _on_autolabel_log(self, text: str):
+        ts = datetime.now().strftime("%H:%M:%S")
+        self.txt_autolabel_log.appendPlainText(f"[{ts}] {text}")
+        sb = self.txt_autolabel_log.verticalScrollBar()
+        sb.setValue(sb.maximum())
+
+    def _on_autolabel_finished(self, res: dict):
+        self.btn_run_autolabel.setEnabled(True)
+        self.btn_stop_autolabel.setEnabled(False)
+        self.studio_mascot.set_state(DancingSvgMascot.STATE_SUCCESS)
+        total_ann = res.get("total_annotations", 0)
+        total_img = res.get("total_images", 0)
+        self.lbl_autolabel_status.setText(f"Done! {total_ann} annotations generated across {total_img} images.")
+        self._on_autolabel_log("=== Process completed successfully ===")
+
+        if res.get("uploaded_to_cvat"):
+            t_id = res.get("dest_task_id")
+            p_id = res.get("dest_project_id")
+            proj_str = f" (Project #{p_id})" if p_id else ""
+            self._on_autolabel_log(f"Successfully uploaded to CVAT Task #{t_id}{proj_str}!")
+            self.notify.push(
+                "Auto-Label Success",
+                f"Generated {total_ann} annotations and uploaded to CVAT Task #{t_id}!",
+                "success",
+            )
+            # Re-fetch tasks from CVAT to update tables
+            try:
+                self.all_tasks_data = self.cvat_client.get_tasks()
+                self._populate_tasks_table(self.all_tasks_data)
+                self._refresh_autolabel_cvat_lists()
+            except Exception:
+                pass
+        else:
+            json_p = res.get("json_path", "")
+            self.notify.push(
+                "Auto-Label Success",
+                f"Generated {total_ann} annotations saved to {Path(json_p).name}!",
+                "success",
+            )
+
+    def _on_autolabel_error(self, err_msg: str):
+        self.btn_run_autolabel.setEnabled(True)
+        self.btn_stop_autolabel.setEnabled(False)
+        self.studio_mascot.set_state(DancingSvgMascot.STATE_ERROR)
+        self.lbl_autolabel_status.setText(f"Error: {err_msg}")
+        self._on_autolabel_log(f"ERROR: {err_msg}")
+        self.notify.push("Auto-Label Error", err_msg, "error")
+        QMessageBox.critical(self, "Auto-Label Error", f"An error occurred during auto-labeling:\n\n{err_msg}")
+
+    def _open_autolabel_dir(self):
+        out_dir = self.data_dir / "_autolabel"
+        self._open_dir(out_dir)

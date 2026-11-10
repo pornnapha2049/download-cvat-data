@@ -3,12 +3,12 @@
 โปรแกรม Python GUI (PyQt5) สำหรับประมวลผล Computer Vision แบบ **All-in-One Connected Pipeline**:
 1. **หน้าจอ Login แรกเริ่มแบบต้นฉบับ (Dedicated Sign-In Screen)**: หน้าการ์ด Login สไตล์โมเดิร์นอยู่ตรงกลาง พร้อมมาสคอต **แมวอ้วนน่ารักดุ้กดิ๊ก (Mochi Cat)** กระดิกหางและขยับหูทักทาย สามารถกดเข้าสู่ระบบ หรือกดปุ่ม *"Work with Local Datasets (Skip Login / Offline Mode)"* เพื่อข้ามเข้าสู่ Studio ได้ทันที
 2. **ระบบ Studio Pipeline เชื่อมโยงกัน (Cohesive 6-Step Workflow)**:
-   - **Step 1: Task Downloader**: ค้นหา กรอง และเลือก Task ดาวน์โหลดจาก CVAT พร้อมแตกไฟล์และย้ายรูปออกจากโฟลเดอร์ `default` อัตโนมัติ
-   - **Step 2: Merge Datasets**: รวม Task ต่างๆ เข้าสู่โฟลเดอร์ `data/` เดียว พร้อมระบบ MD5 Collision Resolution ป้องกันรูปชื่อซ้ำ
-   - **Step 3: COCO to YOLO Converter**: แปลงฟอร์แมต COCO 1.0 เป็น YOLO Detection (Bounding Box) หรือ Segmentation (Polygon)
-   - **Step 4: Dataset Splitter**: แบ่งข้อมูล Train / Val / Test (ครอบคลุมทุกรูป 100% ทั้งที่มี Label และไม่มี Label/รูป Background)
-   - **Step 5: YOLO Auto-Trainer**: Train โมเดล YOLO ด้วยระบบ Auto-Tune Hyperparameters, Early Stopping (Patience), Run Versioning (`_v1`, `_v2`, ...) และเปลี่ยนชื่อ `best.pt` เป็น `{custom_name}_v{run_num}.pt` ใน `runs/.../weights/` โดยตรง
-   - **Step 6: Test Model (Inference & Evaluation)**: ทดสอบโมเดลที่ Train แล้วกับภาพเดี่ยว (Single Image), ทั้งโฟลเดอร์ (Entire Folder), หรือไฟล์วิดีโอ (Video File) พร้อมดูผลลัพธ์พรีวิวแบบ Real-time และเลือกบันทึกผลได้
+   - **Step 1: Download & Merge**: ค้นหา กรอง และเลือก Task ดาวน์โหลดจาก CVAT พร้อมรวมเข้าสู่โฟลเดอร์ `data/` เดียวและจัดการชื่อรูปซ้ำอัตโนมัติ
+   - **Step 2: COCO to YOLO Converter**: แปลงฟอร์แมต COCO 1.0 เป็น YOLO Detection (Bounding Box) หรือ Segmentation (Polygon)
+   - **Step 3: Dataset Splitter**: แบ่งข้อมูล Train / Val / Test (ครอบคลุมทุกรูป 100% ทั้งที่มี Label และไม่มี Label/รูป Background)
+   - **Step 4: YOLO Auto-Trainer**: Train โมเดล YOLO ด้วยระบบ Auto-Tune Hyperparameters, Early Stopping (Patience), Run Versioning (`_v1`, `_v2`, ...) และเปลี่ยนชื่อ `best.pt` เป็น `{custom_name}_v{run_num}.pt` ใน `runs/.../weights/` โดยตรง
+   - **Step 5: Test Model (Inference & Evaluation)**: ทดสอบโมเดลที่ Train แล้วกับภาพเดี่ยว (Single Image), ทั้งโฟลเดอร์ (Entire Folder), หรือไฟล์วิดีโอ (Video File) พร้อมดูผลลัพธ์พรีวิวแบบ Real-time และเลือกบันทึกผลได้
+   - **Step 6: Auto Label & CVAT Upload**: ทำ Annotation อัตโนมัติด้วยโมเดลในเครื่อง (COCO 1.0 format) แล้วอัปโหลดขึ้น CVAT ตาม Project และ Task ที่เลือก หรือสร้าง Project / Task ใหม่ รองรับการดึงรูปภาพจาก CVAT หรือจาก Local (กรณี Local จะอัปโหลดรูปภาพพร้อม Annotation ให้อัตโนมัติ)
 
 > 🐳 **ต้องการรันด้วย Docker หรือใช้งานผ่าน Web Browser (noVNC)?** ดูคู่มือฉบับเต็มได้ที่ [README_DOCKER.md](README_DOCKER.md)
 

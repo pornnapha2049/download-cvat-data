@@ -13,6 +13,8 @@ import typing
 from pathlib import Path
 from cvat_sdk import Client
 from cvat_sdk.core.progress import ProgressReporter
+from cvat_sdk.api_client import models
+from cvat_sdk.core.proxies.tasks import ResourceType
 
 
 def sanitize_filename(name: str) -> str:
@@ -349,3 +351,137 @@ class CvatClientWrapper:
                         json.dump(coco_data, f, ensure_ascii=False, indent=2)
             except Exception as e:
                 print(f"Warning cleaning instances_default.json in {task_dir}: {e}")
+
+    def create_project(self, name: str, labels: typing.Optional[list[str]] = None) -> dict:
+        """Create a new project on CVAT server."""
+        if not self.client:
+            raise RuntimeError("Not connected to CVAT server.")
+
+        label_specs = [models.PatchedLabelRequest(name=str(lbl)) for lbl in (labels or [])]
+        spec = models.ProjectWriteRequest(name=name, labels=label_specs)
+        proj = self.client.projects.create(spec=spec)
+        p_id = getattr(proj, "id", None)
+        p_name = getattr(proj, "name", name)
+        if p_id:
+            self.projects_cache[p_id] = p_name
+        return {"id": p_id, "name": p_name, "project_obj": proj}
+
+    def create_task(
+        self,
+        name: str,
+        project_id: typing.Optional[int] = None,
+        labels: typing.Optional[list[str]] = None,
+    ) -> dict:
+        """Create a new task on CVAT server (either standalone with labels or under a project)."""
+        if not self.client:
+            raise RuntimeError("Not connected to CVAT server.")
+
+        if project_id:
+            spec = models.TaskWriteRequest(name=name, project_id=project_id)
+        else:
+            label_specs = [models.PatchedLabelRequest(name=str(lbl)) for lbl in (labels or [])]
+            spec = models.TaskWriteRequest(name=name, labels=label_specs)
+
+        task = self.client.tasks.create(spec=spec)
+        t_id = getattr(task, "id", None)
+        t_name = getattr(task, "name", name)
+        return {"id": t_id, "name": t_name, "project_id": project_id, "task_obj": task}
+
+    def sync_project_labels(self, project_id: int, needed_labels: list[str]) -> list[str]:
+        """Ensure all needed_labels are registered on the CVAT project."""
+        if not self.client:
+            raise RuntimeError("Not connected to CVAT server.")
+
+        project = self.client.projects.retrieve(project_id)
+        existing = project.get_labels()
+        existing_names = {l.name for l in existing}
+        missing = [lbl for lbl in needed_labels if lbl and lbl not in existing_names]
+
+        if missing:
+            full_labels = [
+                models.PatchedLabelRequest(id=l.id, name=l.name) for l in existing
+            ] + [
+                models.PatchedLabelRequest(name=m) for m in missing
+            ]
+            patch_req = models.PatchedProjectWriteRequest(labels=full_labels)
+            project.update(patch_req)
+
+        return list(existing_names.union(missing))
+
+    def sync_task_labels(self, task_id: int, needed_labels: list[str]) -> list[str]:
+        """Ensure all needed_labels are registered on the CVAT task (or its parent project)."""
+        if not self.client:
+            raise RuntimeError("Not connected to CVAT server.")
+
+        task = self.client.tasks.retrieve(task_id)
+        proj_id = getattr(task, "project_id", None)
+        if proj_id:
+            return self.sync_project_labels(proj_id, needed_labels)
+
+        existing = task.get_labels()
+        existing_names = {l.name for l in existing}
+        missing = [lbl for lbl in needed_labels if lbl and lbl not in existing_names]
+
+        if missing:
+            full_labels = [
+                models.PatchedLabelRequest(id=l.id, name=l.name) for l in existing
+            ] + [
+                models.PatchedLabelRequest(name=m) for m in missing
+            ]
+            patch_req = models.PatchedTaskWriteRequest(labels=full_labels)
+            task.update(patch_req)
+
+        return list(existing_names.union(missing))
+
+    def upload_task_images(
+        self,
+        task_id: int,
+        image_paths: list[Path],
+        progress_callback: typing.Optional[typing.Callable[[int, int, str], None]] = None,
+    ):
+        """Upload a sequence of local image files to a CVAT task."""
+        if not self.client:
+            raise RuntimeError("Not connected to CVAT server.")
+
+        task = self.client.tasks.retrieve(task_id)
+        reporter = CvatProgressReporter(progress_callback) if progress_callback else None
+        task.upload_data(
+            resources=[Path(p) for p in image_paths],
+            resource_type=ResourceType.LOCAL,
+            pbar=reporter,
+            wait_for_completion=True,
+        )
+
+    def import_task_annotations(
+        self,
+        task_id: int,
+        annotation_file: Path,
+        format_name: str = "COCO 1.0",
+        progress_callback: typing.Optional[typing.Callable[[int, int, str], None]] = None,
+    ):
+        """Import annotations into a CVAT task."""
+        if not self.client:
+            raise RuntimeError("Not connected to CVAT server.")
+
+        task = self.client.tasks.retrieve(task_id)
+        reporter = CvatProgressReporter(progress_callback) if progress_callback else None
+        task.import_annotations(
+            format_name=format_name,
+            filename=Path(annotation_file),
+            pbar=reporter,
+        )
+
+    def get_task_details(self, task_id: int) -> dict:
+        """Fetch task status, frame count (size), and parent project."""
+        if not self.client:
+            raise RuntimeError("Not connected to CVAT server.")
+
+        task = self.client.tasks.retrieve(task_id)
+        return {
+            "id": task.id,
+            "name": getattr(task, "name", f"Task_{task.id}"),
+            "project_id": getattr(task, "project_id", None),
+            "size": getattr(task, "size", 0),
+            "status": str(getattr(task, "status", "")),
+            "task_obj": task,
+        }
