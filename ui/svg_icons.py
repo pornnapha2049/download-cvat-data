@@ -1,128 +1,142 @@
 """
-SVG icon library for CVAT to YOLO Studio — "Blob Duotone" style, tuned for the Navy Enterprise theme.
+SVG icon library for CVAT to YOLO Studio — "Tinted Tiles" style (Console theme).
 
 Style rules
-- No outlines. Each icon sits on a soft organic blob in the light tone of its hue,
-  shapes use the mid tone (+ a 20% deep overlay), details/lines use the deep tone.
-- Blue/navy for most icons; colour only where it carries meaning:
-  green = run / ok, rose = stop / leave, amber = folders / warnings, lilac = AI / magic.
-- Small sizes (<= 18 px) drop the blob so the glyph stays crisp on buttons.
-- inverse=True gives a white version for dark (navy / red) buttons.
+- Thin, round-cap line glyphs on a 24 px grid.
+- At sizes above SMALL_ICON_PX the glyph sits on a soft rounded tile in the light
+  tone of its hue; the glyph itself uses the deep tone.
+- Pipeline steps each have their own hue so they can be told apart at a glance:
+  download = indigo, convert = violet, split = teal, train = amber, test = rose,
+  auto-label = green. Generic actions use neutral grey; colour only where it means
+  something (green = run / ok, rose = stop / leave, amber = warning).
+- Small sizes (<= 18 px) drop the tile so the glyph stays crisp on buttons.
+- inverse=True gives a white version for dark (accent / red) buttons.
 
-API (unchanged): get_svg_icon(name, size), get_svg_pixmap(name, w, h), get_svg_raw(name)
-New: inverse= flag, icon_name_for(icon) to find which icon a QIcon was built from.
+API (unchanged): get_svg_icon(name, size), get_svg_pixmap(name, w, h), get_svg_raw(name),
+SVG_DEFS, icon_name_for(icon), inverse= flag.
 """
 
 from PyQt5 import QtSvg
 from PyQt5.QtGui import QIcon, QPixmap, QPainter
 from PyQt5.QtCore import QByteArray, Qt, QRectF
 
-SMALL_ICON_PX = 18   # at or below this size the background blob is dropped
+SMALL_ICON_PX = 18   # at or below this size the tile is dropped
+
+# hue -> (tile background, glyph colour)
+HUES = {
+    "indigo": ("#eef0ff", "#3b4ce0"),
+    "violet": ("#f4f0ff", "#6941c6"),
+    "teal":   ("#e6f6f4", "#0e7c70"),
+    "amber":  ("#fff6e5", "#b54708"),
+    "rose":   ("#fff0f3", "#c01048"),
+    "green":  ("#ecfdf3", "#067647"),
+    "gray":   ("#f2f4f7", "#344054"),
+}
+
+# Hues for the six pipeline steps, in order (also used by the sidebar).
+STEP_HUES = ("indigo", "violet", "teal", "amber", "rose", "green")
+STEP_ICONS = ("step_cvat", "step_convert", "step_split", "step_train", "step_test", "step_autolabel")
+
+
+def _c(cx, cy, r):
+    """Circle as a path (QtSvg handles a single path list more predictably)."""
+    return f"M{cx - r} {cy}a{r} {r} 0 1 0 {2 * r} 0a{r} {r} 0 1 0 {-2 * r} 0"
+
 
 # fmt: off
-HUES = {
-    "navy":  ("#e5ebf3", "#9fb6d4", "#1f3a5f"),
-    "sky":   ("#e3f0f7", "#9cc9df", "#1d5c78"),
-    "sage":  ("#e3f1e6", "#a5d3b0", "#2f6b3d"),
-    "rose":  ("#fbe6ea", "#f0a9b6", "#b03548"),
-    "amber": ("#fbf1d9", "#f1cf7d", "#8a5a08"),
-    "lilac": ("#ece8f8", "#bdb2e6", "#4a3c8c"),
-}
+# name: (hue, stroke path, optional filled path)
+_DOWNLOAD = "M12 3v11M7.5 9.5L12 14l4.5-4.5M4 15v3.5A1.5 1.5 0 0 0 5.5 20h13a1.5 1.5 0 0 0 1.5-1.5V15"
+_UPLOAD = "M12 15V4M7.5 8.5L12 4l4.5 4.5M4 15v3.5A1.5 1.5 0 0 0 5.5 20h13a1.5 1.5 0 0 0 1.5-1.5V15"
+_FOLDER = "M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"
+_EYE = "M2.5 12s3.5-6.5 9.5-6.5S21.5 12 21.5 12s-3.5 6.5-9.5 6.5S2.5 12 2.5 12z" + _c(12, 12, 3)
+_BELL = "M6 16v-5a6 6 0 1 1 12 0v5l1.5 2h-15zM10 20.5a2.2 2.2 0 0 0 4 0"
+_TAG = "M3 4v7l9.5 9.5a1.5 1.5 0 0 0 2 0l6-6a1.5 1.5 0 0 0 0-2L11 3H4a1 1 0 0 0-1 1zM7.5 7.5h.01"
+_SPARKLE = "M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"
 
-BLOB = ("M12 1.8 C17.6 1.4 22.6 5.4 22.2 11.6 C21.8 17.6 17.8 22.4 11.6 22.2 "
-        "C5.6 22 1.6 17.6 1.8 11.8 C2 6 6.4 2.2 12 1.8 Z")
-
-# (hue, [(kind, role, *geometry)])   roles: shape (mid fill), shape2 (deep fill), line (deep stroke)
 ICONS = {
-    "folder": ("amber", [("path", "shape", "M3.8 7.4 C3.8 6.2 4.6 5.4 5.8 5.4 L9.2 5.4 L11 7.4 L18.2 7.4 C19.4 7.4 20.2 8.2 20.2 9.4 L20.2 16.8 C20.2 18 19.4 18.8 18.2 18.8 L5.8 18.8 C4.6 18.8 3.8 18 3.8 16.8 Z"),
-                         ("path", "line", "M3.8 10.4 L20.2 10.4")]),
-    "download": ("navy", [("path", "line", "M12 4.6 L12 14.6 M8.2 11 L12 14.8 L15.8 11"), ("path", "line", "M5 17 L5 18 C5 19 5.8 19.6 6.8 19.6 L17.2 19.6 C18.2 19.6 19 19 19 18 L19 17")]),
-    "refresh": ("navy", [("path", "line", "M18.4 12 A6.4 6.4 0 1 1 16.4 7.4 M16.8 4.4 L16.8 7.8 L13.4 7.8")]),
-    "play": ("sage", [("circle", "shape", 12, 12, 8.6),
-                      ("path", "shape2", "M10.2 8.6 C10.2 8 10.8 7.7 11.3 8 L15.6 11.2 C16.1 11.6 16.1 12.4 15.6 12.8 L11.3 16 C10.8 16.3 10.2 16 10.2 15.4 Z")]),
-    "stop": ("rose", [("circle", "shape", 12, 12, 8.6), ("rect", "shape2", 8.8, 8.8, 6.4, 6.4, 1.8)]),
-    "search": ("navy", [("circle", "shape", 10.6, 10.6, 6), ("path", "line", "M15.2 15.2 L19.6 19.6")]),
-    "check": ("sage", [("circle", "shape", 12, 12, 8.6), ("path", "line", "M8 12.2 L10.9 15 L16 9.4")]),
-    "warning": ("amber", [("path", "shape", "M12 4 L20.5 19 L3.5 19 Z"), ("path", "line", "M12 9.5 L12 13.4"), ("circle", "shape2", 12, 16.2, 1.2)]),
-    "bell": ("navy", [("path", "shape", "M12 4.4 C8.8 4.4 7.4 7 7.4 10.4 C7.4 13.4 6.2 15 5.4 15.8 L18.6 15.8 C17.8 15 16.6 13.4 16.6 10.4 C16.6 7 15.2 4.4 12 4.4 Z"),
-                      ("path", "line", "M10.2 18.4 C10.6 19.4 11.2 19.8 12 19.8 C12.8 19.8 13.4 19.4 13.8 18.4"),
-                      ("circle", "accent", 17.4, 5.6, 2.6)]),
-    "logout": ("rose", [("path", "line", "M10 4.5 L6 4.5 C5 4.5 4.5 5 4.5 6 L4.5 18 C4.5 19 5 19.5 6 19.5 L10 19.5"),
-                        ("path", "line", "M14.4 8 L18.4 12 L14.4 16 M18.4 12 L9 12")]),
-    "arrow_left": ("navy", [("path", "line", "M14.5 6.5 L9 12 L14.5 17.5")]),
-    "arrow_right": ("navy", [("path", "line", "M9.5 6.5 L15 12 L9.5 17.5")]),
-    "eye": ("navy", [("path", "shape", "M2.5 12 C5.4 6.6 18.6 6.6 21.5 12 C18.6 17.4 5.4 17.4 2.5 12 Z"), ("circle", "shape2", 12, 12, 3.4)]),
-    "eye_off": ("navy", [("path", "shape", "M2.5 12 C5.4 6.6 18.6 6.6 21.5 12 C18.6 17.4 5.4 17.4 2.5 12 Z"), ("circle", "shape2", 12, 12, 3.2),
-                         ("path", "line", "M4.5 4.5 L19.5 19.5")]),
-    "filter": ("navy", [("path", "line", "M4.5 7 L19.5 7 M7.5 12 L16.5 12 M10.5 17 L13.5 17")]),
-    "box": ("sky", [("rect", "shape", 5, 5, 14, 14, 3), ("circle", "shape2", 5, 5, 2), ("circle", "shape2", 19, 5, 2),
-                    ("circle", "shape2", 5, 19, 2), ("circle", "shape2", 19, 19, 2)]),
-    "polygon": ("rose", [("path", "shape", "M12 4 L19.6 9.4 L17 19 L7 19 L4.4 9.4 Z"), ("circle", "shape2", 12, 4, 1.9), ("circle", "shape2", 19.6, 9.4, 1.9),
-                         ("circle", "shape2", 17, 19, 1.9), ("circle", "shape2", 7, 19, 1.9), ("circle", "shape2", 4.4, 9.4, 1.9)]),
-    "brain": ("lilac", [("path", "shape", "M11.4 5.6 C8.4 5.6 6.8 7.4 6.8 9.4 C5.4 10.2 5.4 12.6 6.3 13.6 C5.8 15.6 7.2 18 9.6 18 C10.5 18 11.1 17.6 11.4 17.2 Z"),
-                        ("path", "shape", "M12.6 5.6 C15.6 5.6 17.2 7.4 17.2 9.4 C18.6 10.2 18.6 12.6 17.7 13.6 C18.2 15.6 16.8 18 14.4 18 C13.5 18 12.9 17.6 12.6 17.2 Z"),
-                        ("path", "line", "M8.6 10.6 Q10 11.2 10.6 10 M15.4 10.6 Q14 11.2 13.4 10")]),
-    "sparkle": ("lilac", [("path", "shape2", "M12 4.5 L13.7 10.3 L19.5 12 L13.7 13.7 L12 19.5 L10.3 13.7 L4.5 12 L10.3 10.3 Z")]),
-    "zen_stones": ("navy", [("path", "shape", "M4 18 C4 15.6 8 14.4 12 14.4 C16 14.4 20 15.6 20 18 C20 20.4 16 21.4 12 21.4 C8 21.4 4 20.4 4 18 Z"),
-                            ("path", "shape", "M6.6 12 C6.6 10.4 9.2 9.4 12 9.4 C14.8 9.4 17.4 10.4 17.4 12 C17.4 13.6 14.8 14.4 12 14.4 C9.2 14.4 6.6 13.6 6.6 12 Z"),
-                            ("circle", "shape2", 12, 6.6, 3)]),
-    "step_cvat": ("navy", [("path", "shape", "M6.6 15.6 C4.6 15.6 3.6 13.8 4.4 12.2 C5 11 6.2 10.6 7 10.8 C7.6 7.8 11.8 6.6 14.2 9 C16.4 8.2 18.8 9.8 18.6 12.2 C20.4 12.8 20 15.6 17.8 15.6 Z"),
-                           ("path", "line", "M12 11.6 L12 19.4 M9.4 17 L12 19.6 L14.6 17")]),
-    "step_merge": ("amber", [("path", "line", "M8.6 7 C12 7 12.4 12 15 12 M8.6 17 C12 17 12.4 12 15 12"),
-                             ("circle", "shape", 6.8, 7, 2.6), ("circle", "shape", 6.8, 17, 2.6), ("circle", "shape2", 17, 12, 3.2)]),
-    "step_convert": ("lilac", [("path", "line", "M5.6 18.4 L14 10"),
-                               ("path", "shape2", "M15.6 4.6 L16.5 7.5 L19.4 8.4 L16.5 9.3 L15.6 12.2 L14.7 9.3 L11.8 8.4 L14.7 7.5 Z")]),
-    "step_split": ("sky", [("rect", "shape2", 5, 7, 4, 12, 2), ("rect", "shape", 10.2, 9.5, 4, 9.5, 2), ("rect", "shape", 15.4, 12, 4, 7, 2)]),
-    "step_train": ("navy", [("path", "shape", "M12 3.6 C15.4 6.6 16.8 10.6 15.8 15 L8.2 15 C7.2 10.6 8.6 6.6 12 3.6 Z"),
-                            ("circle", "shape2", 12, 9.4, 1.9),
-                            ("path", "shape2", "M8.6 12.6 L5.8 15.8 L8.6 15.8 Z M15.4 12.6 L18.2 15.8 L15.4 15.8 Z M10.2 16.6 Q12 21 12 21 Q12 21 13.8 16.6")]),
-    "step_runs": ("sage", [("path", "shape", "M4.6 8.4 C4.6 7.4 5.2 6.8 6.2 6.8 L9.4 6.8 L11 8.6 L17.8 8.6 C18.8 8.6 19.4 9.2 19.4 10.2 L19.4 16.8 C19.4 17.8 18.8 18.4 17.8 18.4 L6.2 18.4 C5.2 18.4 4.6 17.8 4.6 16.8 Z"),
-                           ("path", "line", "M9.6 13.4 L11.4 15.2 L14.6 12")]),
-    "step_test": ("lilac", [("circle", "shape", 11, 11, 5.6), ("path", "line", "M15.2 15.2 L19 19 M8.6 11.2 L10.4 13 L13.4 9.8")]),
-    "image": ("sky", [("rect", "shape", 3.6, 4.6, 16.8, 14.8, 3.6), ("circle", "shape2", 8.4, 9, 1.7), ("path", "line", "M4 17 L9 12.4 L13 15.8 L15.8 13.2 L20 17")]),
-    "video": ("rose", [("rect", "shape", 3.5, 6, 12, 12, 3), ("path", "shape2", "M15.5 10.4 L20.5 7.6 L20.5 16.4 L15.5 13.6 Z")]),
-    "chart": ("navy", [("rect", "shape", 3.6, 12, 3.2, 8, 1.6), ("rect", "shape2", 8.2, 8, 3.2, 12, 1.6), ("rect", "shape", 12.8, 4.6, 3.2, 15.4, 1.6), ("rect", "shape2", 17.4, 9.6, 3.2, 10.4, 1.6)]),
-    "fullscreen": ("navy", [("path", "line", "M4 9 L4 4 L9 4 M20 9 L20 4 L15 4 M4 15 L4 20 L9 20 M20 15 L20 20 L15 20")]),
-    "upload": ("sage", [("path", "line", "M12 15 L12 5 M8.2 8.8 L12 5 L15.8 8.8"), ("path", "line", "M5 17 L5 18 C5 19 5.8 19.6 6.8 19.6 L17.2 19.6 C18.2 19.6 19 19 19 18 L19 17")]),
-    "step_autolabel": ("sage", [("path", "shape", "M12 4.5 L13.7 10.3 L19.5 12 L13.7 13.7 L12 19.5 L10.3 13.7 L4.5 12 L10.3 10.3 Z"), ("path", "line", "M5 17 L5 18 C5 19 5.8 19.6 6.8 19.6 L17.2 19.6 C18.2 19.6 19 19 19 18 L19 17")]),
+    # --- pipeline steps ---------------------------------------------------
+    "step_cvat":      ("indigo", _DOWNLOAD, None),
+    "download":       ("indigo", _DOWNLOAD, None),
+    "step_merge":     ("indigo", _c(6, 6, 2) + _c(6, 18, 2) + "M8 6c4.5 0 4.5 6 8.5 6M8 18c4.5 0 4.5-6 8.5-6" + _c(18.5, 12, 2.2), None),
+    "step_convert":   ("violet", "M4 4h6v6H4zM14 14h6v6h-6zM10 7h5a2 2 0 0 1 2 2v3M15 10l2 2 2-2M14 17H9a2 2 0 0 1-2-2v-3M9 14l-2-2-2 2", None),
+    "step_split":     ("teal",   "M3 12h5M8 12c3 0 4-6 8-6h4M8 12h12M8 12c3 0 4 6 8 6h4" + _c(5, 12, 2), None),
+    "step_train":     ("amber",  "M7 7h10v10H7zM10 3v4M14 3v4M10 17v4M14 17v4M3 10h4M3 14h4M17 10h4M17 14h4M10 10h4v4h-4z", None),
+    "step_runs":      ("green",  _FOLDER + "M9.5 13l2 2 3.5-3.5", None),
+    "step_test":      ("rose",   _c(12, 12, 9) + _c(12, 12, 4) + "M12 1.5v4M12 18.5v4M1.5 12h4M18.5 12h4", None),
+    "step_autolabel": ("green",  _TAG, None),
+
+    # --- semantic actions ------------------------------------------------
+    "play":    ("green", "M7 4.5v15l12.5-7.5z", "M7 4.5v15l12.5-7.5z"),
+    "stop":    ("rose",  "M6.5 6.5h11v11h-11z", "M6.5 6.5h11v11h-11z"),
+    "check":   ("green", "M5 12.5l4.5 4.5L19 7.5", None),
+    "warning": ("amber", "M12 3.5L21.5 20h-19zM12 10v4.5M12 17.2h.01", None),
+    "logout":  ("rose",  "M9 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h3M14 16l4-4-4-4M18 12H8", None),
+    "upload":  ("green", _UPLOAD, None),
+
+    # --- annotation types / AI -------------------------------------------
+    "box":      ("indigo", "M6 6h12v12H6z" + _c(6, 6, 1.6) + _c(18, 6, 1.6) + _c(6, 18, 1.6) + _c(18, 18, 1.6), None),
+    "polygon":  ("violet", "M12 3.5l8 6-3 10.5H7L4 9.5z" + _c(12, 3.5, 1.4) + _c(20, 9.5, 1.4) + _c(4, 9.5, 1.4), None),
+    "brain":    ("amber",  "M9 4a3 3 0 0 0-3 3v.5A3 3 0 0 0 4 10.5a3 3 0 0 0 1 2.2A3 3 0 0 0 6 18a3 3 0 0 0 3 2h1V4zM15 4a3 3 0 0 1 3 3v.5a3 3 0 0 1 2 3a3 3 0 0 1-1 2.2A3 3 0 0 1 18 18a3 3 0 0 1-3 2h-1V4z", None),
+    "sparkle":  ("violet", _SPARKLE + "M18.5 15.5l.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8z", None),
+
+    # --- neutral UI ------------------------------------------------------
+    "folder":      ("gray", _FOLDER, None),
+    "refresh":     ("gray", "M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7", None),
+    "search":      ("gray", _c(11, 11, 7) + "M20 20l-4-4", None),
+    "bell":        ("gray", _BELL, None),
+    "bell_plain":  ("gray", _BELL, None),
+    "arrow_left":  ("gray", "M15 6l-6 6 6 6", None),
+    "arrow_right": ("gray", "M9 6l6 6-6 6", None),
+    "eye":         ("gray", _EYE, None),
+    "eye_off":     ("gray", _EYE + "M4 4l16 16", None),
+    "filter":      ("gray", "M4 6h16M7 12h10M10 18h4", None),
+    "image":       ("gray", "M3 5h18v14H3zM3 16l5-5 4 4 3-3 6 6" + _c(15.5, 9, 1.5), None),
+    "video":       ("gray", "M3 6h12v12H3zM15 10l6-3.5v11L15 14", None),
+    "chart":       ("gray", "M3 20h18M6 20v-7M11 20V5M16 20V10", None),
+    "fullscreen":  ("gray", "M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5", None),
+    "settings":    ("gray", "M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M16 4v4M10 10v4M18 16v4", None),
+    "user":        ("gray", _c(12, 8, 4) + "M4 20c1.5-3.5 4.5-5 8-5s6.5 1.5 8 5", None),
+    "zen_stones":  ("gray", "M4 18c0-2 3.6-3 8-3s8 1 8 3-3.6 3-8 3-8-1-8-3zM7 12c0-1.5 2.2-2.5 5-2.5s5 1 5 2.5-2.2 2.5-5 2.5-5-1-5-2.5z" + _c(12, 6, 2.5), None),
 }
-
-
-def _el(kind, geo, attrs):
-    if kind == "path":
-        return f'<path d="{geo[0]}" {attrs}/>'
-    if kind == "circle":
-        return f'<circle cx="{geo[0]}" cy="{geo[1]}" r="{geo[2]}" {attrs}/>'
-    x, y, w, h, rx = geo
-    return f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="{rx}" {attrs}/>'
-
-
 # fmt: on
+
+TILE_SCALE = 0.62          # glyph size inside a tile, relative to the tile
+TILE_RADIUS = 6.5          # in 24-grid units (≈ 27% of the tile)
 
 
 def build_svg(name: str, inverse: bool = False, with_blob: bool = True) -> str:
-    """Builds the SVG markup for an icon. Unknown names fall back to 'sparkle'."""
-    hue, els = ICONS.get(name, ICONS["sparkle"])
-    light, mid, deep = HUES[hue]
+    """Builds the SVG markup for an icon. Unknown names fall back to 'sparkle'.
+
+    with_blob keeps its old name for compatibility: it now means "draw the tile".
+    """
+    hue, stroke_d, fill_d = ICONS.get(name, ICONS["sparkle"])
+    tile, ink = HUES[hue]
     if inverse:
-        light = mid = deep = "#ffffff"
+        tile, ink = "#ffffff", "#ffffff"
+
     out = []
     if with_blob:
-        out.append(f'<path d="{BLOB}" fill="{light}" fill-opacity="{0.16 if inverse else 1}"/>')
-    for kind, role, *geo in els:
-        if role == "line":
-            out.append(_el(kind, geo, f'fill="none" stroke="{deep}" stroke-width="1.9" '
-                                      'stroke-linecap="round" stroke-linejoin="round"'))
-        elif role == "shape":
-            out.append(_el(kind, geo, f'fill="{mid}" fill-opacity="{0.55 if inverse else 1}"'))
-            if not inverse:
-                out.append(_el(kind, geo, f'fill="{deep}" fill-opacity="0.2"'))
-        elif role == "accent":
-            out.append(_el(kind, geo, 'fill="#e5486f" stroke="#ffffff" stroke-width="1.2"'))
-        else:  # shape2
-            out.append(_el(kind, geo, f'fill="{deep}"'))
+        out.append(f'<rect x="0" y="0" width="24" height="24" rx="{TILE_RADIUS}" ry="{TILE_RADIUS}" '
+                   f'fill="{tile}" fill-opacity="{0.18 if inverse else 1}"/>')
+        off = 12 * (1 - TILE_SCALE)
+        out.append(f'<g transform="translate({off:.2f} {off:.2f}) scale({TILE_SCALE})">')
+        width = 2.3
+    else:
+        out.append("<g>")
+        width = 1.9
+
+    if fill_d:
+        out.append(f'<path d="{fill_d}" fill="{ink}" stroke="none"/>')
+    out.append(f'<path d="{stroke_d}" fill="none" stroke="{ink}" stroke-width="{width}" '
+               'stroke-linecap="round" stroke-linejoin="round"/>')
+    out.append("</g>")
     return ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">'
             + "".join(out) + "</svg>")
+
+
+def hue_of(name: str) -> tuple[str, str]:
+    """(tile, ink) colours for an icon — handy for matching text or borders to an icon."""
+    return HUES[ICONS.get(name, ICONS["sparkle"])[0]]
 
 
 # Raw SVG strings (default look) — kept for code that reads SVG_DEFS directly.
@@ -141,14 +155,15 @@ def get_svg_raw(name: str, inverse: bool = False, with_blob: bool = True) -> str
     return build_svg(name, inverse=inverse, with_blob=with_blob)
 
 
-def get_svg_pixmap(name: str, width: int = 24, height: int = 24, inverse: bool = False) -> QPixmap:
-    """Renders an icon to a crisp (2x) QPixmap. Small sizes drop the blob background."""
-    with_blob = max(width, height) > SMALL_ICON_PX
-    key = (name, width, height, inverse, with_blob)
+def get_svg_pixmap(name: str, width: int = 24, height: int = 24, inverse: bool = False,
+                   tile: bool | None = None) -> QPixmap:
+    """Renders an icon to a crisp (2x) QPixmap. Small sizes drop the tile unless tile=True."""
+    with_tile = (max(width, height) > SMALL_ICON_PX) if tile is None else tile
+    key = (name, width, height, inverse, with_tile)
     if key in _PIXMAP_CACHE:
         return _PIXMAP_CACHE[key]
 
-    renderer = QtSvg.QSvgRenderer(QByteArray(build_svg(name, inverse, with_blob).encode("utf-8")))
+    renderer = QtSvg.QSvgRenderer(QByteArray(build_svg(name, inverse, with_tile).encode("utf-8")))
     pix = QPixmap(width * 2, height * 2)
     pix.fill(Qt.transparent)
     painter = QPainter(pix)
@@ -162,12 +177,12 @@ def get_svg_pixmap(name: str, width: int = 24, height: int = 24, inverse: bool =
     return pix
 
 
-def get_svg_icon(name: str, size: int = 22, inverse: bool = False) -> QIcon:
+def get_svg_icon(name: str, size: int = 22, inverse: bool = False, tile: bool | None = None) -> QIcon:
     """Returns a cached QIcon. Use inverse=True on dark buttons."""
-    key = (name, size, inverse)
+    key = (name, size, inverse, tile)
     if key in _ICON_CACHE:
         return _ICON_CACHE[key]
-    icon = QIcon(get_svg_pixmap(name, size, size, inverse))
+    icon = QIcon(get_svg_pixmap(name, size, size, inverse, tile))
     _ICON_CACHE[key] = icon
     _ICON_NAMES[icon.cacheKey()] = (name, size)
     return icon

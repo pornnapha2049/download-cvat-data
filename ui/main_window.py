@@ -1,8 +1,9 @@
 """
 Main Window for the CVAT-to-YOLO GUI application.
 Featuring:
-- Dedicated First Login Screen (view_login) with centered card and wiggling chubby cat mascot
-- Full Studio Pipeline (view_studio) with cohesive top stepper bar (Steps 1 to 6)
+- Sign-in screen (view_login): dark brand panel listing the pipeline + CVAT sign-in form
+- Studio (view_studio): left sidebar with the 6 pipeline steps (tinted-tile icons),
+  page header (breadcrumb, title, guide, status pill) and Previous / Next footer
 - Connected workflow (not isolated standalone): users can switch tabs freely or follow Next/Prev flow
 - Single unified 'data/' directory architecture
 - Blank CVAT server URL by default
@@ -45,9 +46,9 @@ from core.evaluator import (
     dataset_stats, read_training_results, validate_on_split, evaluate_external,
     has_separate_test_split, resolve_split_images, write_report_files,
 )
-from ui.dancing_svg import DancingSvgMascot, AnimatedWavePill, get_cat_pixmap
+from ui.dancing_svg import DancingSvgMascot   # only its STATE_* names are used (StatusPill)
 from ui.theme import DARK_STYLESHEET, PALETTE
-from ui.svg_icons import get_svg_icon, get_svg_pixmap, icon_name_for
+from ui.svg_icons import get_svg_icon, get_svg_pixmap, icon_name_for, STEP_ICONS
 from ui.report_dialog import ReportDialog, StatCard, pct, fmt_secs
 from ui.notifications import NotificationCenter
 from ui.fullscreen_preview import TestFullscreenDialog
@@ -645,6 +646,81 @@ class AutoLabelWorker(QThread):
 
 
 # =====================================================================
+# Console-theme widgets: status pill (replaces the mascot) and sidebar step row
+# =====================================================================
+
+class StatusPill(QLabel):
+    """Small coloured pill that shows what the app is doing.
+
+    Drop-in replacement for the old DancingSvgMascot: it has the same set_state()
+    API and accepts the same DancingSvgMascot.STATE_* values.
+    """
+
+    _LOOK = {
+        DancingSvgMascot.STATE_IDLE:        ("Ready",    PALETTE["lilac"], PALETTE["text"]),
+        DancingSvgMascot.STATE_SLEEP:       ("Ready",    PALETTE["lilac"], PALETTE["text"]),
+        DancingSvgMascot.STATE_DOWNLOADING: ("Working…", PALETTE["sky"],   PALETTE["sky_ink"]),
+        DancingSvgMascot.STATE_PROCESSING:  ("Working…", PALETTE["sky"],   PALETTE["sky_ink"]),
+        DancingSvgMascot.STATE_TRAINING:    ("Training…", PALETTE["lemon"], PALETTE["lemon_ink"]),
+        DancingSvgMascot.STATE_SUCCESS:     ("Done",     PALETTE["sage"],  PALETTE["sage_ink"]),
+        DancingSvgMascot.STATE_ERROR:       ("Error",    "#fef3f2",        "#b42318"),
+    }
+
+    def __init__(self, hide_when_idle: bool = False, parent=None):
+        super().__init__(parent)
+        self.setObjectName("statusPill")
+        self.setAlignment(Qt.AlignCenter)
+        self._hide_when_idle = hide_when_idle
+        self.state = None
+        self.set_state(DancingSvgMascot.STATE_IDLE)
+
+    def set_state(self, state: str):
+        self.state = state
+        text, bg, fg = self._LOOK.get(state, self._LOOK[DancingSvgMascot.STATE_IDLE])
+        self.setText(f"●  {text}")
+        self.setStyleSheet(f"QLabel#statusPill {{ background-color: {bg}; color: {fg}; }}")
+        idle = state in (DancingSvgMascot.STATE_IDLE, DancingSvgMascot.STATE_SLEEP)
+        self.setVisible(not (self._hide_when_idle and idle))
+
+
+class SidebarStepButton(QPushButton):
+    """Pipeline row in the sidebar: tinted icon tile, title and a one-line hint.
+
+    It is a QPushButton so the existing StepButton / StepButtonActive class switching
+    in _go_to_step keeps working unchanged.
+    """
+
+    def __init__(self, icon_name: str, title: str, meta: str, parent=None):
+        super().__init__(parent)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setMinimumHeight(52)
+        self.setToolTip(f"{title} — {meta}")
+
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(8, 6, 8, 6)
+        lay.setSpacing(12)
+
+        tile = QLabel()
+        tile.setPixmap(get_svg_pixmap(icon_name, 34, 34))
+        tile.setFixedSize(34, 34)
+        lay.addWidget(tile)
+
+        txt = QVBoxLayout()
+        txt.setSpacing(0)
+        self.lbl_title = QLabel(title)
+        self.lbl_title.setStyleSheet(f"font-size: 14px; font-weight: 600; color: {PALETTE['ink']};")
+        self.lbl_meta = QLabel(meta)
+        self.lbl_meta.setStyleSheet(f"font-size: 12px; color: {PALETTE['muted']};")
+        txt.addWidget(self.lbl_title)
+        txt.addWidget(self.lbl_meta)
+        lay.addLayout(txt, 1)
+
+        for w in (tile, self.lbl_title, self.lbl_meta):
+            w.setAttribute(Qt.WA_TransparentForMouseEvents)
+
+
+
+# =====================================================================
 # Main GUI Window (Login View + Studio Connected Workflow)
 # =====================================================================
 
@@ -778,76 +854,6 @@ class MainWindow(QMainWindow):
             return "Good Afternoon"
         return "Good Evening"
 
-    def _make_choice_card(self, variant: str, title: str, subtitle: str, on_click) -> QFrame:
-        """Square-ish choice card like "Hang out" / "Laugh": cat badge, title, round → badge."""
-        card = QFrame()
-        card.setProperty("class", "ChoiceCardPink" if variant == "pink" else "ChoiceCardNavy")
-        card.setCursor(Qt.PointingHandCursor)
-        card.setMinimumHeight(172)
-        lay = QVBoxLayout(card)
-        lay.setContentsMargins(18, 16, 14, 14)
-        lay.setSpacing(4)
-
-        face = QLabel()
-        face.setPixmap(get_cat_pixmap(64, "teal" if variant == "pink" else "pink"))
-        lay.addWidget(face, alignment=Qt.AlignLeft)
-        lay.addStretch(1)
-
-        bottom = QHBoxLayout()
-        bottom.setSpacing(6)
-        txt = QVBoxLayout()
-        txt.setSpacing(1)
-        lbl_t = QLabel(title)
-        lbl_t.setProperty("class", "ChoiceTitlePink" if variant == "pink" else "ChoiceTitleNavy")
-        lbl_s = QLabel(subtitle)
-        lbl_s.setProperty("class", "ChoiceSubPink" if variant == "pink" else "ChoiceSubNavy")
-        lbl_s.setWordWrap(True)
-        txt.addWidget(lbl_t)
-        txt.addWidget(lbl_s)
-        bottom.addLayout(txt, 1)
-
-        arrow = QLabel("→")
-        arrow.setAlignment(Qt.AlignCenter)
-        arrow.setProperty("class", "ArrowBadgePink" if variant == "pink" else "ArrowBadgeNavy")
-        bottom.addWidget(arrow, 0, Qt.AlignBottom)
-        lay.addLayout(bottom)
-
-        card.mousePressEvent = lambda e: on_click()
-        return card
-
-    def _make_todo_row(self, icon: str, tile_bg: str, title: str, subtitle: str) -> QFrame:
-        """Row like "Mind Detox / Gratitude Notes": icon tile, two lines of text, play circle."""
-        row = QFrame()
-        row.setProperty("class", "SoftCard")
-        lay = QHBoxLayout(row)
-        lay.setContentsMargins(10, 10, 14, 10)
-        lay.setSpacing(12)
-
-        tile = QLabel()
-        tile.setFixedSize(46, 46)
-        tile.setAlignment(Qt.AlignCenter)
-        tile.setPixmap(get_svg_pixmap(icon, 28, 28))
-        tile.setStyleSheet(f"background-color: {tile_bg}; border-radius: 14px;")
-        lay.addWidget(tile)
-
-        txt = QVBoxLayout()
-        txt.setSpacing(0)
-        t = QLabel(title)
-        t.setStyleSheet(f"font-weight: 700; font-size: 13px; color: {PALETTE['ink']};")
-        st = QLabel(subtitle)
-        st.setStyleSheet(f"font-size: 11.5px; color: {PALETTE['muted']};")
-        txt.addWidget(t)
-        txt.addWidget(st)
-        lay.addLayout(txt, 1)
-
-        play = QLabel("▶")
-        play.setAlignment(Qt.AlignCenter)
-        play.setFixedSize(30, 30)
-        play.setStyleSheet(f"border: 2px solid {PALETTE['ink']}; border-radius: 15px; "
-                           f"color: {PALETTE['ink']}; font-size: 10px; padding-left: 2px;")
-        lay.addWidget(play)
-        return row
-
     def _wrap_page_scroll(self, widget: QWidget) -> QScrollArea:
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -866,7 +872,7 @@ class MainWindow(QMainWindow):
         root_layout.setContentsMargins(0, 0, 0, 0)
         root_layout.setSpacing(0)
 
-        # Root Stack: 0 -> First Dedicated Login Screen, 1 -> Connected Studio Workflow
+        # Root Stack: 0 -> Sign-in screen, 1 -> Studio (sidebar + pages)
         self.root_stack = QStackedWidget()
         self.view_login = self._build_login_view()
         self.view_studio = self._build_studio_view()
@@ -877,141 +883,112 @@ class MainWindow(QMainWindow):
 
         self.root_stack.setCurrentIndex(0)
 
+    @staticmethod
+    def _step_name(idx: int) -> str:
+        """'1. Download & Merge' -> 'Download & Merge'."""
+        return MainWindow.STEP_TITLES[idx][0].split(". ", 1)[-1]
+
+    @staticmethod
+    def _logo_label(size: int = 30, dark: bool = True) -> QLabel:
+        """App mark: a rounded square with the auto-label glyph."""
+        lbl = QLabel()
+        lbl.setFixedSize(size, size)
+        lbl.setAlignment(Qt.AlignCenter)
+        glyph = int(size * 0.6)
+        lbl.setPixmap(get_svg_pixmap("sparkle", glyph, glyph, inverse=dark, tile=False))
+        bg = PALETTE["ink"] if dark else "#ffffff"
+        lbl.setStyleSheet(f"background-color: {bg}; border-radius: {size // 4}px;")
+        if not dark:
+            lbl.setPixmap(get_svg_pixmap("sparkle", glyph, glyph, tile=False))
+        return lbl
+
     # =================================================================
-    # VIEW 0: DEDICATED FIRST LOGIN SCREEN (The Original Design)
+    # VIEW 0: SIGN-IN SCREEN — dark brand panel + form
     # =================================================================
     def _build_login_view(self) -> QWidget:
         view = QWidget()
-        outer = QVBoxLayout(view)
-        outer.setContentsMargins(36, 24, 36, 18)
-        outer.setSpacing(0)
-        outer.addStretch(1)
+        row = QHBoxLayout(view)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(0)
 
-        # Centred content column (keeps a calm, phone-like rhythm on wide monitors)
-        content = QWidget()
-        content.setMaximumWidth(1080)
-        layout = QVBoxLayout(content)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(22)
+        # ---------- Left: brand panel ----------
+        brand = QFrame()
+        brand.setObjectName("loginBrandPanel")
+        brand.setMinimumWidth(400)
+        b_lay = QVBoxLayout(brand)
+        b_lay.setContentsMargins(56, 48, 56, 40)
+        b_lay.setSpacing(0)
 
-        center_row = QHBoxLayout()
-        center_row.addStretch(1)
-        center_row.addWidget(content, 100)
-        center_row.addStretch(1)
+        b_head = QHBoxLayout()
+        b_head.setSpacing(12)
+        b_head.addWidget(self._logo_label(32, dark=False))
+        lbl_brand = QLabel("YOLO Studio")
+        lbl_brand.setObjectName("loginBrandName")
+        b_head.addWidget(lbl_brand)
+        b_head.addStretch()
+        b_lay.addLayout(b_head)
+        b_lay.addStretch(2)
 
-        # ---------- Greeting header + bell ----------
-        header = QHBoxLayout()
-        header.setSpacing(12)
-        head_txt = QVBoxLayout()
-        head_txt.setSpacing(6)
+        lbl_hero = QLabel("From CVAT annotations\nto a trained YOLO model.")
+        lbl_hero.setObjectName("loginHero")
+        lbl_hero.setWordWrap(True)
+        b_lay.addWidget(lbl_hero)
+        b_lay.addSpacing(28)
 
-        lbl_greeting = QLabel(f"{self._time_greeting()}, Developer")
-        lbl_greeting.setObjectName("greetingTitle")
-        head_txt.addWidget(lbl_greeting)
+        for idx in range(len(self.STEP_TITLES)):
+            r = QHBoxLayout()
+            r.setSpacing(14)
+            num = QLabel(str(idx + 1))
+            num.setProperty("class", "LoginStepNum")
+            num.setAlignment(Qt.AlignCenter)
+            txt = QLabel(f"{self._step_name(idx)}  ·  {self.STEP_TITLES[idx][1]}")
+            txt.setProperty("class", "LoginStepText")
+            r.addWidget(num)
+            r.addWidget(txt, 1)
+            b_lay.addLayout(r)
+            b_lay.addSpacing(12)
 
-        lbl_sub = QLabel("Select what you want more for now")
-        lbl_sub.setObjectName("greetingSubtitle")
-        head_txt.addWidget(lbl_sub)
-        header.addLayout(head_txt, 1)
+        b_lay.addStretch(3)
+        lbl_ver = QLabel("CVAT to YOLO Studio  •  Console edition")
+        lbl_ver.setObjectName("loginVersion")
+        b_lay.addWidget(lbl_ver)
+        row.addWidget(brand, 11)
 
+        # ---------- Right: form ----------
+        form_side = QWidget()
+        f_outer = QVBoxLayout(form_side)
+        f_outer.setContentsMargins(32, 20, 24, 24)
+        f_outer.setSpacing(0)
+
+        top_bar = QHBoxLayout()
+        top_bar.addStretch()
         bell = QPushButton()
         bell.setObjectName("circleNavButton")
-        bell.setIcon(get_svg_icon("bell", 24))
-        bell.setIconSize(QSize(24, 24))
+        bell.setIcon(get_svg_icon("bell", 18))
+        bell.setIconSize(QSize(18, 18))
+        bell.setToolTip("Notifications")
         self.notify.attach_button(bell)
-        header.addWidget(bell, 0, Qt.AlignTop)
-        layout.addLayout(header)
+        top_bar.addWidget(bell)
+        f_outer.addLayout(top_bar)
+        f_outer.addStretch(1)
 
-        # ---------- Two columns ----------
-        cols = QHBoxLayout()
-        cols.setSpacing(24)
-
-        # LEFT: choice cards + quote/mascot card
-        left_col = QVBoxLayout()
-        left_col.setSpacing(18)
-
-        choices = QHBoxLayout()
-        choices.setSpacing(16)
-        choices.addWidget(self._make_choice_card(
-            "pink", "Work Offline", "Use local COCO / YOLO data", self._on_skip_login), 1)
-        choices.addWidget(self._make_choice_card(
-            "navy", "Auto-Trainer", "Train YOLO detect & segment",
-            lambda: (self._on_skip_login(), self._go_to_step(self.STEP_TRAIN))), 1)
-        left_col.addLayout(choices)
-
-        quote_card = QFrame()
-        quote_card.setProperty("class", "LoginCard")
-        qc_lay = QVBoxLayout(quote_card)
-        qc_lay.setContentsMargins(26, 20, 22, 22)
-        qc_lay.setSpacing(10)
-
-        q_top = QHBoxLayout()
-        q_top.setSpacing(10)
-        q_txt = QVBoxLayout()
-        q_txt.setSpacing(8)
-        tag_row = QHBoxLayout()
-        pill = QLabel("Day advice")
-        pill.setProperty("class", "TagPink")
-        tag_row.addWidget(pill)
-        tag_row.addStretch()
-        q_txt.addLayout(tag_row)
-
-        lbl_quote = QLabel("\u201cPatience is the companion of wisdom.\u201d")
-        lbl_quote.setObjectName("heroQuoteText")
-        lbl_quote.setWordWrap(True)
-        q_txt.addWidget(lbl_quote)
-
-        lbl_author = QLabel("— Saint Augustine")
-        lbl_author.setObjectName("heroQuoteAuthor")
-        q_txt.addWidget(lbl_author)
-        q_txt.addStretch(1)
-        q_top.addLayout(q_txt, 1)
-
-        self.login_mascot = DancingSvgMascot(size=140)
-        q_top.addWidget(self.login_mascot, 0, Qt.AlignVCenter)
-        qc_lay.addLayout(q_top)
-
-        lbl_things = QLabel("Things you can do")
-        lbl_things.setProperty("class", "SectionTitle")
-        qc_lay.addWidget(lbl_things)
-
-        for icon, tile_bg, title, sub in (
-            ("step_cvat", PALETTE["lilac"], "Fetch CVAT tasks", "Download COCO 1.0 && flatten images"),
-            ("step_train", PALETTE["sky"], "Train && test YOLO", "Auto-tune, early stop, preview results"),
-            ("step_autolabel", PALETTE["sage"], "Auto-label with model", "Local YOLO → COCO annotations → CVAT"),
-        ):
-            qc_lay.addWidget(self._make_todo_row(icon, tile_bg, title.replace("&&", "&"), sub.replace("&&", "&")))
-        qc_lay.addStretch(1)
-        left_col.addWidget(quote_card, 1)
-
-        cols.addLayout(left_col, 11)
-
-        # RIGHT: Sign-in card
-        right_card = QFrame()
-        right_card.setProperty("class", "LoginCard")
-        right_card.setMinimumWidth(400)
-        right_layout = QVBoxLayout(right_card)
-        right_layout.setContentsMargins(34, 28, 34, 28)
-        right_layout.setSpacing(10)
-
-        form_tag_row = QHBoxLayout()
-        for text, cls in (("CVAT", "TagYellow"), ("Server", "TagGreen"), ("Portal", "TagPurple")):
-            t = QLabel(text)
-            t.setProperty("class", cls)
-            form_tag_row.addWidget(t)
-        form_tag_row.addStretch()
-        right_layout.addLayout(form_tag_row)
-        right_layout.addSpacing(4)
+        form = QFrame()
+        form.setProperty("class", "LoginCard")
+        form.setMaximumWidth(440)
+        form.setMinimumWidth(360)
+        right_layout = QVBoxLayout(form)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(8)
 
         lbl_form_title = QLabel("Sign in to CVAT")
         lbl_form_title.setObjectName("loginTitle")
         right_layout.addWidget(lbl_form_title)
 
-        lbl_form_sub = QLabel("Enter your CVAT server credentials to access tasks, images & annotations.")
+        lbl_form_sub = QLabel("Connect to your CVAT server to browse projects and tasks.")
         lbl_form_sub.setObjectName("loginSubtitle")
         lbl_form_sub.setWordWrap(True)
         right_layout.addWidget(lbl_form_sub)
-        right_layout.addSpacing(4)
+        right_layout.addSpacing(12)
 
         # Alert Banner (Hidden by default)
         self.lbl_login_alert = QLabel()
@@ -1028,6 +1005,7 @@ class MainWindow(QMainWindow):
         self.txt_login_url.setPlaceholderText("http://<your-cvat-server>:8080")
         self.txt_login_url.setProperty("class", "LoginInput")
         right_layout.addWidget(self.txt_login_url)
+        right_layout.addSpacing(6)
 
         lbl_user = QLabel("Username")
         lbl_user.setProperty("class", "FieldLabel")
@@ -1036,6 +1014,7 @@ class MainWindow(QMainWindow):
         self.txt_login_user.setPlaceholderText("Enter your CVAT username")
         self.txt_login_user.setProperty("class", "LoginInput")
         right_layout.addWidget(self.txt_login_user)
+        right_layout.addSpacing(6)
 
         lbl_pass = QLabel("Password")
         lbl_pass.setProperty("class", "FieldLabel")
@@ -1052,20 +1031,22 @@ class MainWindow(QMainWindow):
 
         self.btn_toggle_pass = QPushButton()
         self.btn_toggle_pass.setObjectName("btnTogglePassword")
-        self.btn_toggle_pass.setIcon(get_svg_icon("eye_off", 20))
+        self.btn_toggle_pass.setIcon(get_svg_icon("eye_off", 18))
+        self.btn_toggle_pass.setIconSize(QSize(18, 18))
         self.btn_toggle_pass.setToolTip("Show / Hide Password (แสดงหรือซ่อนรหัสผ่าน)")
         self.btn_toggle_pass.setCursor(Qt.PointingHandCursor)
-        self.btn_toggle_pass.setFixedSize(42, 42)
+        self.btn_toggle_pass.setFixedSize(44, 44)
         self.btn_toggle_pass.clicked.connect(self._toggle_password_visibility)
 
         pass_row.addWidget(self.txt_login_pass, 1)
         pass_row.addWidget(self.btn_toggle_pass)
         right_layout.addLayout(pass_row)
+        right_layout.addSpacing(6)
 
         # Remember me (URL + username in QSettings, password in the OS credential store)
         remember_row = QHBoxLayout()
-        remember_row.setSpacing(14)
-        self.chk_remember = QCheckBox("Remember URL && username")
+        remember_row.setSpacing(18)
+        self.chk_remember = QCheckBox("Remember server && username")
         self.chk_remember.setChecked(True)
         self.chk_remember_pwd = QCheckBox("Remember password")
         self.chk_remember_pwd.setToolTip(secure_store.describe())
@@ -1076,65 +1057,95 @@ class MainWindow(QMainWindow):
         remember_row.addWidget(self.chk_remember)
         remember_row.addWidget(self.chk_remember_pwd)
         remember_row.addStretch()
+        right_layout.addLayout(remember_row)
+
         self.btn_forget_login = QPushButton("Forget saved login")
         self.btn_forget_login.setProperty("class", "SkipLoginButton")
         self.btn_forget_login.setCursor(Qt.PointingHandCursor)
         self.btn_forget_login.clicked.connect(self._forget_saved_login)
-        remember_row.addWidget(self.btn_forget_login)
-        right_layout.addLayout(remember_row)
+        right_layout.addWidget(self.btn_forget_login, 0, Qt.AlignLeft)
+
         if not secure_store.available():
             hint = QLabel("Remember password needs the 'keyring' package on this system: pip install keyring")
             hint.setWordWrap(True)
-            hint.setStyleSheet(f"color: {PALETTE['muted']}; font-size: 11px;")
+            hint.setStyleSheet(f"color: {PALETTE['muted']}; font-size: 12px;")
             right_layout.addWidget(hint)
 
+        status_row = QHBoxLayout()
+        status_row.setSpacing(10)
+        self.login_mascot = StatusPill(hide_when_idle=True)
+        status_row.addWidget(self.login_mascot)
         self.lbl_login_status = QLabel("")
-        self.lbl_login_status.setAlignment(Qt.AlignCenter)
-        self.lbl_login_status.setStyleSheet(f"color: {PALETTE['teal']}; font-weight: 600;")
-        right_layout.addWidget(self.lbl_login_status)
-        right_layout.addStretch(1)
+        self.lbl_login_status.setWordWrap(True)
+        self.lbl_login_status.setStyleSheet(f"color: {PALETTE['muted']}; font-size: 13px;")
+        status_row.addWidget(self.lbl_login_status, 1)
+        right_layout.addLayout(status_row)
+        right_layout.addSpacing(6)
 
-        self.btn_do_login = QPushButton("Sign In && Launch Studio")
+        self.btn_do_login = QPushButton("Sign in")
         self.btn_do_login.setProperty("class", "LoginButton")
         self.btn_do_login.setCursor(Qt.PointingHandCursor)
         self.btn_do_login.clicked.connect(self._on_do_login)
         right_layout.addWidget(self.btn_do_login)
+        right_layout.addSpacing(10)
 
-        cols.addWidget(right_card, 9)
-        layout.addLayout(cols)
+        or_row = QHBoxLayout()
+        or_row.setSpacing(12)
+        for side in ("l", "r"):
+            line = QFrame()
+            line.setProperty("class", "DividerLine")
+            or_row.addWidget(line, 1)
+            if side == "l":
+                lbl_or = QLabel("or")
+                lbl_or.setObjectName("orDivider")
+                or_row.addWidget(lbl_or)
+        right_layout.addLayout(or_row)
+        right_layout.addSpacing(10)
 
-        for w in (quote_card, right_card):
-            self._soft_shadow(w)
+        btn_offline = QPushButton("Work offline with local datasets")
+        btn_offline.setProperty("class", "OfflineButton")
+        btn_offline.setIcon(get_svg_icon("folder", 18))
+        btn_offline.setIconSize(QSize(18, 18))
+        btn_offline.setCursor(Qt.PointingHandCursor)
+        btn_offline.clicked.connect(self._on_skip_login)
+        right_layout.addWidget(btn_offline)
 
-        outer.addLayout(center_row)
-        outer.addStretch(1)
+        lbl_off = QLabel("Offline mode skips CVAT download and auto-label upload.")
+        lbl_off.setAlignment(Qt.AlignCenter)
+        lbl_off.setWordWrap(True)
+        lbl_off.setStyleSheet(f"color: {PALETTE['muted']}; font-size: 13px;")
+        right_layout.addWidget(lbl_off)
 
-        lbl_foot = QLabel("CVAT to YOLO Studio • Navy Enterprise Edition v3.0")
-        lbl_foot.setStyleSheet(f"color: {PALETTE['faint']}; font-size: 11px;")
-        lbl_foot.setAlignment(Qt.AlignCenter)
-        outer.addWidget(lbl_foot)
+        center = QHBoxLayout()
+        center.addStretch(1)
+        center.addWidget(form, 10)
+        center.addStretch(1)
+        f_outer.addLayout(center)
+        f_outer.addStretch(1)
 
+        row.addWidget(form_side, 13)
         return view
 
     # =================================================================
-    # VIEW 1: CONNECTED STUDIO WORKFLOW (6 STEPS)
+    # VIEW 1: STUDIO — sidebar pipeline + page area
     # =================================================================
     def _build_studio_view(self) -> QWidget:
         view = QWidget()
-        layout = QVBoxLayout(view)
-        layout.setContentsMargins(22, 14, 22, 14)
-        layout.setSpacing(12)
+        row = QHBoxLayout(view)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(0)
 
-        # 1. Studio Header with Cute Chubby Cat Mascot & User Info
+        # 1. Sidebar (brand, workspace, 6 pipeline steps, user)
+        row.addWidget(self._build_stepper_bar())
+
+        # 2. Main column
+        main = QWidget()
+        layout = QVBoxLayout(main)
+        layout.setContentsMargins(36, 24, 36, 12)
+        layout.setSpacing(16)
+
         layout.addWidget(self._build_studio_header())
 
-        # 2. Interactive Stepper Bar (Step 1 -> 5, Cohesive Pipeline)
-        layout.addWidget(self._build_stepper_bar())
-
-        # 3. Dynamic Guide Box
-        layout.addWidget(self._build_guide_box())
-
-        # 4. Connected Multi-Page Container (QStackedWidget)
         self.pages = QStackedWidget()
         self.pages.addWidget(self._wrap_page_scroll(self._build_page_cvat()))       # Step 1: Download & auto-merge
         self.pages.addWidget(self._wrap_page_scroll(self._build_page_convert()))    # Step 2: Convert COCO to YOLO
@@ -1144,123 +1155,159 @@ class MainWindow(QMainWindow):
         self.pages.addWidget(self._wrap_page_scroll(self._build_page_autolabel()))  # Step 6: Auto-Label & CVAT
         layout.addWidget(self.pages, stretch=1)
 
-        # 5. Bottom Stepper Footer Navigation (< Previous | Step Pills | Next >)
         layout.addWidget(self._build_stepper_footer())
-
+        row.addWidget(main, 1)
         return view
 
     # -----------------------------------------------------------------
-    # Studio Header
+    # Page header: breadcrumb, step title, guide text, status, bell
     # -----------------------------------------------------------------
     def _build_studio_header(self) -> QFrame:
-        """Top app bar sitting on the background (like the reference phones): cat, greeting, actions."""
         card = QFrame()
-        card.setObjectName("topAppBar")
+        card.setObjectName("pageHeader")
         layout = QHBoxLayout(card)
-        layout.setContentsMargins(6, 0, 6, 0)
-        layout.setSpacing(12)
-
-        self.studio_mascot = DancingSvgMascot(size=76)
-        layout.addWidget(self.studio_mascot)
-
-        text_layout = QVBoxLayout()
-        text_layout.setSpacing(2)
-
-        title_row = QHBoxLayout()
-        title_row.setSpacing(10)
-        title_lbl = QLabel("CVAT to YOLO Studio")
-        title_lbl.setObjectName("appTitleLabel")
-        title_row.addWidget(title_lbl)
-        self.wave_indicator = AnimatedWavePill(44, 20)
-        title_row.addWidget(self.wave_indicator)
-        title_row.addStretch()
-        text_layout.addLayout(title_row)
-
-        self.lbl_user_badge = QLabel("Local Mode • Ready to process datasets")
-        self.lbl_user_badge.setObjectName("userBadge")
-        text_layout.addWidget(self.lbl_user_badge)
-        layout.addLayout(text_layout, stretch=1)
-
-        btn_data = QPushButton("data/ Folder")
-        btn_data.setProperty("class", "SecondaryNavButton")
-        btn_data.setIcon(get_svg_icon("folder", 16))
-        btn_data.setIconSize(QSize(16, 16))
-        btn_data.setCursor(Qt.PointingHandCursor)
-        btn_data.clicked.connect(lambda: self._open_dir(self._ds().root))
-        layout.addWidget(btn_data)
-
-        btn_logout = QPushButton("Logout")
-        btn_logout.setProperty("class", "LogoutButton")
-        btn_logout.setIcon(get_svg_icon("logout", 14))
-        btn_logout.setIconSize(QSize(14, 14))
-        btn_logout.setCursor(Qt.PointingHandCursor)
-        btn_logout.clicked.connect(self._on_logout)
-        layout.addWidget(btn_logout)
-
-        bell = QPushButton()
-        bell.setObjectName("circleNavButton")
-        bell.setIcon(get_svg_icon("bell", 22))
-        bell.setIconSize(QSize(22, 22))
-        self.notify.attach_button(bell)
-        layout.addWidget(bell)
-
-        return card
-
-    # -----------------------------------------------------------------
-    # Stepper — segmented pills ("Day | Week | Month" style)
-    # -----------------------------------------------------------------
-    def _build_stepper_bar(self) -> QFrame:
-        bar = QFrame()
-        bar.setProperty("class", "StepperContainer")
-        layout = QHBoxLayout(bar)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(8)
-
-        self.step_buttons: list[QPushButton] = []
-        for idx, (title, sub) in enumerate(self.STEP_TITLES):
-            btn = QPushButton()
-            btn.setProperty("class", "StepButtonActive" if idx == 0 else "StepButton")
-            btn.setText(f"{title}\n{sub}".replace("&", "&&"))
-            btn.setCursor(Qt.PointingHandCursor)
-            btn.clicked.connect(lambda checked, step_idx=idx: self._go_to_step(step_idx))
-            layout.addWidget(btn, stretch=1)
-            self.step_buttons.append(btn)
-
-        return bar
-
-    # -----------------------------------------------------------------
-    # Guide Box — pink card like "Yes or No Quiz"
-    # -----------------------------------------------------------------
-    def _build_guide_box(self) -> QFrame:
-        box = QFrame()
-        box.setProperty("class", "GuideBox")
-        layout = QHBoxLayout(box)
-        layout.setContentsMargins(16, 10, 18, 10)
         layout.setSpacing(12)
 
-        icon_lbl = QLabel()
-        icon_lbl.setPixmap(get_cat_pixmap(34, "teal"))
-        layout.addWidget(icon_lbl)
+        text = QVBoxLayout()
+        text.setSpacing(4)
+        self.lbl_step_indicator = QLabel(f"Pipeline  /  Step 1 of {len(self.STEP_TITLES)}")
+        self.lbl_step_indicator.setObjectName("pageCrumb")
+        text.addWidget(self.lbl_step_indicator)
 
-        tag = QLabel("Tip")
-        tag.setProperty("class", "TagNavy")
-        layout.addWidget(tag)
+        self.lbl_page_title = QLabel(self._step_name(0))
+        self.lbl_page_title.setObjectName("pageTitle")
+        text.addWidget(self.lbl_page_title)
 
         self.lbl_guide = QLabel(self.STEP_GUIDES[0])
         self.lbl_guide.setObjectName("guideLabel")
         self.lbl_guide.setWordWrap(True)
-        layout.addWidget(self.lbl_guide, stretch=1)
+        text.addWidget(self.lbl_guide)
+        layout.addLayout(text, 1)
 
-        return box
+        self.studio_mascot = StatusPill()
+        layout.addWidget(self.studio_mascot, 0, Qt.AlignTop)
+
+        bell = QPushButton()
+        bell.setObjectName("circleNavButton")
+        bell.setIcon(get_svg_icon("bell", 18))
+        bell.setIconSize(QSize(18, 18))
+        bell.setToolTip("Notifications")
+        self.notify.attach_button(bell)
+        layout.addWidget(bell, 0, Qt.AlignTop)
+
+        return card
 
     # -----------------------------------------------------------------
-    # Bottom Footer — date-strip style step circles
+    # Sidebar — keeps the old method name so nothing else has to change
+    # -----------------------------------------------------------------
+    def _build_stepper_bar(self) -> QFrame:
+        bar = QFrame()
+        bar.setObjectName("sidebar")
+        bar.setFixedWidth(276)
+        layout = QVBoxLayout(bar)
+        layout.setContentsMargins(16, 20, 16, 14)
+        layout.setSpacing(6)
+
+        brand = QHBoxLayout()
+        brand.setContentsMargins(8, 0, 0, 0)
+        brand.setSpacing(10)
+        brand.addWidget(self._logo_label(30, dark=True))
+        b_txt = QVBoxLayout()
+        b_txt.setSpacing(0)
+        t = QLabel("YOLO Studio")
+        t.setObjectName("brandTitle")
+        s = QLabel("CVAT pipeline")
+        s.setObjectName("brandSub")
+        b_txt.addWidget(t)
+        b_txt.addWidget(s)
+        brand.addLayout(b_txt, 1)
+        layout.addLayout(brand)
+        layout.addSpacing(18)
+
+        sec = QLabel("WORKSPACE")
+        sec.setProperty("class", "SidebarSection")
+        layout.addWidget(sec)
+        self.btn_workspace = QPushButton("data")
+        self.btn_workspace.setObjectName("workspaceButton")
+        self.btn_workspace.setIcon(get_svg_icon("folder", 18))
+        self.btn_workspace.setIconSize(QSize(18, 18))
+        self.btn_workspace.setCursor(Qt.PointingHandCursor)
+        self.btn_workspace.setToolTip("Open the dataset folder")
+        self.btn_workspace.clicked.connect(lambda: self._open_dir(self._ds().root))
+        layout.addWidget(self.btn_workspace)
+        layout.addSpacing(18)
+
+        sec2 = QLabel("PIPELINE")
+        sec2.setProperty("class", "SidebarSection")
+        layout.addWidget(sec2)
+        layout.addSpacing(2)
+
+        self.step_buttons: list[QPushButton] = []
+        for idx, (_title, sub) in enumerate(self.STEP_TITLES):
+            btn = SidebarStepButton(STEP_ICONS[idx], self._step_name(idx), sub)
+            btn.setProperty("class", "StepButtonActive" if idx == 0 else "StepButton")
+            btn.clicked.connect(lambda checked, step_idx=idx: self._go_to_step(step_idx))
+            layout.addWidget(btn)
+            self.step_buttons.append(btn)
+
+        layout.addStretch(1)
+
+        user = QFrame()
+        user.setObjectName("userCard")
+        u_lay = QHBoxLayout(user)
+        u_lay.setContentsMargins(4, 14, 0, 0)
+        u_lay.setSpacing(10)
+        self.lbl_user_avatar = QLabel("L")
+        self.lbl_user_avatar.setObjectName("userAvatar")
+        self.lbl_user_avatar.setAlignment(Qt.AlignCenter)
+        u_lay.addWidget(self.lbl_user_avatar, 0, Qt.AlignTop)
+        u_txt = QVBoxLayout()
+        u_txt.setSpacing(1)
+        self.lbl_user_name = QLabel("Local mode")
+        self.lbl_user_name.setObjectName("userName")
+        self.lbl_user_badge = QLabel("Ready to process datasets")
+        self.lbl_user_badge.setObjectName("userBadge")
+        self.lbl_user_badge.setWordWrap(True)
+        u_txt.addWidget(self.lbl_user_name)
+        u_txt.addWidget(self.lbl_user_badge)
+        u_lay.addLayout(u_txt, 1)
+
+        btn_logout = QPushButton()
+        btn_logout.setProperty("class", "LogoutButton")
+        btn_logout.setIcon(get_svg_icon("logout", 18))
+        btn_logout.setIconSize(QSize(18, 18))
+        btn_logout.setToolTip("Sign out")
+        btn_logout.setCursor(Qt.PointingHandCursor)
+        btn_logout.clicked.connect(self._on_logout)
+        u_lay.addWidget(btn_logout, 0, Qt.AlignTop)
+        layout.addWidget(user)
+
+        return bar
+
+    def _set_user(self, name: str, detail: str):
+        """Fill the user card at the bottom of the sidebar."""
+        self.lbl_user_name.setText(name)
+        self.lbl_user_badge.setText(detail)
+        self.lbl_user_avatar.setText((name.strip()[:1] or "?").upper())
+
+    def _update_workspace_label(self, root: Path):
+        """Show the dataset folder in the sidebar (name on top, full path below)."""
+        if not hasattr(self, "btn_workspace"):
+            return
+        full = str(root)
+        short = full if len(full) <= 30 else "…" + full[-29:]
+        self.btn_workspace.setText(f"{root.name or full}\n{short}")
+        self.btn_workspace.setToolTip(f"Open {full}")
+
+    # -----------------------------------------------------------------
+    # Footer — previous / next
     # -----------------------------------------------------------------
     def _build_stepper_footer(self) -> QFrame:
         footer = QFrame()
         footer.setObjectName("bottomNavFooter")
         layout = QHBoxLayout(footer)
-        layout.setContentsMargins(10, 8, 10, 8)
+        layout.setContentsMargins(0, 12, 0, 0)
         layout.setSpacing(8)
 
         self.btn_footer_prev = QPushButton("Previous")
@@ -1270,23 +1317,6 @@ class MainWindow(QMainWindow):
         self.btn_footer_prev.setCursor(Qt.PointingHandCursor)
         self.btn_footer_prev.clicked.connect(self._on_prev_step)
         layout.addWidget(self.btn_footer_prev)
-
-        layout.addStretch()
-
-        self.step_pills: list[QPushButton] = []
-        for idx in range(len(self.STEP_TITLES)):
-            pill = QPushButton(str(idx + 1))
-            pill.setProperty("class", "StepPillActive" if idx == 0 else "StepPill")
-            pill.setCursor(Qt.PointingHandCursor)
-            pill.setToolTip(self.STEP_TITLES[idx][0])
-            pill.clicked.connect(lambda checked, step_idx=idx: self._go_to_step(step_idx))
-            layout.addWidget(pill)
-            self.step_pills.append(pill)
-
-        layout.addSpacing(8)
-        self.lbl_step_indicator = QLabel(f"Step 1 of {len(self.STEP_TITLES)}")
-        self.lbl_step_indicator.setObjectName("stepIndicator")
-        layout.addWidget(self.lbl_step_indicator)
 
         layout.addStretch()
 
@@ -2612,11 +2642,12 @@ class MainWindow(QMainWindow):
             pill.style().unpolish(pill)
             pill.style().polish(pill)
 
-        # Update Guide Box
+        # Update page header
+        self.lbl_page_title.setText(self._step_name(step_idx))
         self.lbl_guide.setText(self.STEP_GUIDES[step_idx])
+        self.lbl_step_indicator.setText(f"Pipeline  /  Step {step_idx + 1} of {self.pages.count()}")
 
         # Update Footer Navigation
-        self.lbl_step_indicator.setText(f"Step {step_idx + 1} of {self.pages.count()}")
         self.btn_footer_prev.setEnabled(step_idx > 0)
         self.btn_footer_next.setEnabled(step_idx < self.pages.count() - 1)
         if step_idx < len(self.STEP_TITLES) - 1:
@@ -2699,7 +2730,7 @@ class MainWindow(QMainWindow):
         server_url = login_info.get("server_url") or self.txt_login_url.text().strip()
 
         # Update Studio Header Profile Badge
-        self.lbl_user_badge.setText(f"{username} @ {server_url} • {len(tasks)} tasks available")
+        self._set_user(username, f"{server_url} • {len(tasks)} tasks")
 
         # Populate projects dropdown in Step 1
         self.cmb_proj_filter.blockSignals(True)
@@ -2808,7 +2839,7 @@ class MainWindow(QMainWindow):
 
     def _on_skip_login(self):
         """Allows direct entry to studio for local dataset processing."""
-        self.lbl_user_badge.setText("Local Mode (Offline Dataset Processing)")
+        self._set_user("Local mode", "Offline dataset processing")
         self.root_stack.setCurrentIndex(1)
         self.studio_mascot.set_state(DancingSvgMascot.STATE_IDLE)
         self._go_to_step(0)
@@ -2962,6 +2993,7 @@ class MainWindow(QMainWindow):
         self.txt_test_save_dir.setText(str(lay.test_runs))
         if save:
             self.settings.setValue("paths/dataset_dir", str(lay.root))
+        self._update_workspace_label(lay.root)
         self._refresh_data_info()
         if hasattr(self, "lbl_run_preview"):
             self._update_run_preview()

@@ -1,49 +1,50 @@
 """
-Theme for CVAT to YOLO Studio — "Navy Enterprise".
+Theme for CVAT to YOLO Studio — "Console".
 
-Formal, data-first look:
-- Flat cool-grey background (#eef1f5), white cards with thin borders and small corner radii
-- Navy primary (#1f3a5f) for primary buttons, the active step and the selected step box
-- Step tabs underlined like an enterprise app; Tip box with a navy left bar
-- Neutral, muted tags; single-colour navy progress bar; semibold (600) type in Segoe UI
+Clean, light, data-first look:
+- Light grey canvas (#f7f8fa), white cards with thin borders and 10–12 px corners
+- One indigo accent (#3b4ce0) for primary buttons, focus rings and the active step
+- Left sidebar with the pipeline; tinted-tile icons (see ui/svg_icons.py)
+- Semibold (600) type in Inter / Segoe UI
 
-All colours live in PALETTE so they can be reused from Python (inline styles, icons, mascot).
-Key names are kept from the earlier theme: 'teal' = primary colour, 'pink' = highlight colour.
+All colours live in PALETTE so they can be reused from Python (inline styles, icons, reports).
+Key names are kept from the earlier themes: 'teal' = primary colour, 'pink' = highlight colour.
 """
 
 import tempfile
 from pathlib import Path
 
 PALETTE = {
-    "bg_top": "#eef1f5",   # flat background
-    "bg_bottom": "#eef1f5",
+    "bg_top": "#f7f8fa",   # flat background
+    "bg_bottom": "#f7f8fa",
     "card": "#ffffff",
-    "card_border": "#dde3ea",
-    "soft": "#f3f5f8",
-    "line": "#cfd7e0",
-    "ink": "#152238",
-    "text": "#27354b",
-    "muted": "#5f6c80",
-    "faint": "#97a2b2",
-    "teal": "#1f3a5f",   # primary (navy)
-    "teal_hover": "#2a4a76",
-    "teal_press": "#172d4a",
-    "teal_dark": "#14233a",
-    "pink": "#e5ebf3",   # highlight (light navy)
-    "pink_hover": "#d8e1ed",
-    "pink_strong": "#8fa8c8",
-    "pink_ink": "#1f3a5f",
-    "lilac": "#e9ecf2",
-    "lilac_ink": "#3d4a5c",
-    "lavender_bar": "#6f8fb8",
-    "sky": "#e6eef3",
-    "sky_ink": "#2b4a5a",
-    "lemon": "#f3f0dc",
-    "lemon_ink": "#5c5530",
-    "sage": "#e3efe6",
-    "sage_ink": "#2f5e3d",
-    "rose": "#c8414f",
-    "rose_hover": "#b13542",
+    "card_border": "#e4e7ec",
+    "soft": "#f9fafb",
+    "line": "#d0d5dd",
+    "ink": "#101828",
+    "text": "#344054",
+    "muted": "#5b6474",
+    "faint": "#98a2b3",
+    "teal": "#3b4ce0",   # primary (indigo accent)
+    "teal_hover": "#3341c8",
+    "teal_press": "#2a37b0",
+    "teal_dark": "#101828",   # dark surfaces: console, test canvas, login brand panel
+    "pink": "#eef0ff",   # highlight (light indigo)
+    "pink_hover": "#e0e4ff",
+    "pink_strong": "#a4b0ff",
+    "pink_ink": "#2a37b0",
+    "lilac": "#f2f4f7",
+    "lilac_ink": "#344054",
+    "lavender_bar": "#7a8bff",
+    "sky": "#eff4ff",
+    "sky_ink": "#1849a9",
+    "lemon": "#fff6e5",
+    "lemon_ink": "#b54708",
+    "sage": "#ecfdf3",
+    "sage_ink": "#067647",
+    "rose": "#d92d20",
+    "rose_hover": "#b42318",
+    "selected_row": "#f2f4f7",
 }
 
 
@@ -53,35 +54,43 @@ def _write_arrow_assets(color: str) -> str:
     try:
         folder.mkdir(parents=True, exist_ok=True)
         chevrons = {
-            "chevron_down.svg": "M 3 6 L 8 11 L 13 6",
-            "chevron_up.svg": "M 3 10 L 8 5 L 13 10",
+            "chevron_down.svg": "M 4 6 L 8 10 L 12 6",
+            "chevron_up.svg": "M 4 10 L 8 6 L 12 10",
         }
         for name, d in chevrons.items():
             (folder / name).write_text(
                 '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="16" height="16">'
-                f'<path d="{d}" stroke="{color}" stroke-width="2.2" fill="none" '
+                f'<path d="{d}" stroke="{color}" stroke-width="1.8" fill="none" '
                 'stroke-linecap="round" stroke-linejoin="round"/></svg>',
                 encoding="utf-8",
             )
+        (folder / "check_white.svg").write_text(
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="16" height="16">'
+            '<path d="M3.5 8.5 L6.5 11.5 L12.5 5" stroke="#ffffff" stroke-width="2" fill="none" '
+            'stroke-linecap="round" stroke-linejoin="round"/></svg>',
+            encoding="utf-8",
+        )
     except OSError:
         pass
     return folder.as_posix()
 
 
-FONT_STACK = "'Segoe UI', 'Leelawadee UI', 'Tahoma', sans-serif"
+FONT_STACK = "'Inter', 'Segoe UI', 'Leelawadee UI', 'Tahoma', sans-serif"
+MONO_STACK = "'JetBrains Mono', 'Cascadia Code', 'Consolas', 'Courier New', monospace"
 
 
 def _build_stylesheet(c: dict) -> str:
-    assets = _write_arrow_assets(c['teal'])
+    assets = _write_arrow_assets(c['muted'])
+    check = f"{assets}/check_white.svg"
     return f"""
 /* ========================================================= */
-/* Base window — flat cool grey   */
+/* Base window                                               */
 /* ========================================================= */
 QMainWindow {{
     background-color: {c['bg_top']};
 }}
 QWidget#centralWidget {{
-    background: qlineargradient(x1:0, y1:0, x2:0.35, y2:1, stop:0 {c['bg_top']}, stop:1 {c['bg_bottom']});
+    background-color: {c['bg_top']};
     color: {c['text']};
     font-family: {FONT_STACK};
     font-size: 13px;
@@ -89,15 +98,16 @@ QWidget#centralWidget {{
 QWidget {{
     color: {c['text']};
     font-family: {FONT_STACK};
+    font-size: 13px;
 }}
 QLabel {{
     background: transparent;
 }}
 QToolTip {{
-    background-color: {c['teal']};
+    background-color: {c['ink']};
     color: #ffffff;
     border: none;
-    border-radius: 3px;
+    border-radius: 6px;
     padding: 6px 10px;
 }}
 
@@ -111,228 +121,312 @@ QSplitter::handle {{
 }}
 
 /* ========================================================= */
-/* Login page                                                */
+/* Login — dark brand panel + form                           */
 /* ========================================================= */
+QFrame#loginBrandPanel {{
+    background-color: {c['teal_dark']};
+    border: none;
+}}
+QFrame#loginBrandPanel QLabel {{ color: #ffffff; }}
+QLabel#loginBrandName {{
+    font-size: 17px;
+    font-weight: 700;
+}}
+QLabel#loginHero {{
+    font-size: 32px;
+    font-weight: 700;
+}}
+QFrame#loginBrandPanel QLabel.LoginStepText {{
+    color: #d0d5dd;
+    font-size: 14px;
+}}
+QFrame#loginBrandPanel QLabel.LoginStepNum {{
+    color: #ffffff;
+    border: 1px solid #475467;
+    border-radius: 14px;
+    min-width: 28px; max-width: 28px;
+    min-height: 28px; max-height: 28px;
+    font-size: 12px;
+    font-weight: 600;
+}}
+QFrame#loginBrandPanel QLabel#loginVersion {{
+    color: {c['faint']};
+    font-size: 12px;
+}}
 QFrame.LoginCard {{
-    background-color: {c['card']};
-    border: 1px solid {c['card_border']};
-    border-radius: 7px;
+    background-color: transparent;
+    border: none;
 }}
 QLabel#loginTitle {{
-    font-size: 26px;
-    font-weight: 600;
+    font-size: 28px;
+    font-weight: 700;
     color: {c['ink']};
 }}
 QLabel#loginSubtitle {{
-    font-size: 13px;
+    font-size: 14px;
     color: {c['muted']};
 }}
 QLabel.FieldLabel {{
-    font-weight: 700;
-    font-size: 12.5px;
+    font-weight: 600;
+    font-size: 13px;
     color: {c['ink']};
-    padding-left: 6px;
 }}
 QLineEdit.LoginInput {{
-    background-color: {c['soft']};
+    background-color: #ffffff;
     color: {c['ink']};
-    border: 1.5px solid {c['soft']};
-    border-radius: 5px;
-    padding: 10px 18px;
+    border: 1px solid {c['line']};
+    border-radius: 8px;
+    padding: 10px 12px;
     min-height: 22px;
-    font-size: 13px;
+    font-size: 14px;
 }}
 QLineEdit.LoginInput:focus {{
-    border: 1.5px solid {c['teal']};
-    background-color: #ffffff;
+    border: 1px solid {c['teal']};
 }}
 QPushButton.LoginButton {{
     background-color: {c['teal']};
     color: #ffffff;
     border: none;
-    border-radius: 5px;
+    border-radius: 8px;
     padding: 12px 24px;
     font-weight: 600;
-    font-size: 14px;
+    font-size: 15px;
     min-height: 24px;
 }}
 QPushButton.LoginButton:hover {{ background-color: {c['teal_hover']}; }}
 QPushButton.LoginButton:pressed {{ background-color: {c['teal_press']}; }}
 
+QPushButton.OfflineButton {{
+    background-color: #ffffff;
+    color: {c['ink']};
+    border: 1px solid {c['line']};
+    border-radius: 8px;
+    padding: 12px 24px;
+    font-weight: 600;
+    font-size: 15px;
+    min-height: 24px;
+}}
+QPushButton.OfflineButton:hover {{ background-color: {c['soft']}; }}
+
+QLabel#orDivider {{
+    color: {c['muted']};
+    font-size: 13px;
+}}
+QFrame.DividerLine {{
+    background-color: {c['card_border']};
+    border: none;
+    min-height: 1px; max-height: 1px;
+}}
+
 QPushButton#btnTogglePassword {{
-    background-color: {c['soft']};
-    border: 1.5px solid {c['soft']};
-    border-radius: 5px;
+    background-color: #ffffff;
+    border: 1px solid {c['line']};
+    border-radius: 8px;
     padding: 4px;
-    min-width: 42px; max-width: 42px;
-    min-height: 42px; max-height: 42px;
+    min-width: 44px; max-width: 44px;
+    min-height: 44px; max-height: 44px;
 }}
 QPushButton#btnTogglePassword:hover {{
-    background-color: {c['pink']};
-    border-color: {c['pink']};
+    background-color: {c['soft']};
 }}
 
 QPushButton.SkipLoginButton {{
     background-color: transparent;
-    color: {c['muted']};
+    color: {c['teal']};
     border: none;
-    font-size: 12px;
-    text-decoration: underline;
+    font-size: 13px;
     font-weight: 600;
+    padding: 4px 0px;
 }}
-QPushButton.SkipLoginButton:hover {{ color: {c['teal']}; }}
+QPushButton.SkipLoginButton:hover {{ color: {c['teal_press']}; text-decoration: underline; }}
 
 QPushButton.LogoutButton {{
-    background-color: {c['pink']};
-    color: {c['pink_ink']};
+    background-color: transparent;
     border: none;
-    border-radius: 4px;
-    padding: 6px 16px;
-    min-height: 24px;
-    font-weight: 700;
-    font-size: 12px;
+    border-radius: 8px;
+    min-width: 36px; max-width: 36px;
+    min-height: 36px; max-height: 36px;
+    padding: 0px;
 }}
 QPushButton.LogoutButton:hover {{
-    background-color: {c['rose']};
-    color: #ffffff;
+    background-color: #fef3f2;
 }}
 
 QLabel.AlertError {{
-    background-color: #fde8ef;
-    color: #9b1c47;
-    border: none;
-    border-radius: 4px;
-    padding: 10px 16px;
-    font-size: 12px;
+    background-color: #fef3f2;
+    color: #b42318;
+    border: 1px solid #fecdca;
+    border-radius: 8px;
+    padding: 10px 14px;
+    font-size: 13px;
     font-weight: 600;
 }}
 QLabel.AlertSuccess {{
     background-color: {c['sage']};
     color: {c['sage_ink']};
-    border: none;
-    border-radius: 4px;
+    border: 1px solid #abefc6;
+    border-radius: 8px;
     padding: 8px 14px;
-    font-size: 12px;
+    font-size: 13px;
     font-weight: 600;
 }}
 
 /* ========================================================= */
-/* Header / greeting                                         */
+/* Sidebar                                                   */
 /* ========================================================= */
+QFrame#sidebar {{
+    background-color: #ffffff;
+    border: none;
+    border-right: 1px solid {c['card_border']};
+}}
+QLabel#brandTitle {{
+    font-size: 15px;
+    font-weight: 700;
+    color: {c['ink']};
+}}
+QLabel#brandSub {{
+    font-size: 12px;
+    color: {c['muted']};
+}}
+QLabel.SidebarSection {{
+    font-size: 11px;
+    font-weight: 600;
+    color: {c['muted']};
+    letter-spacing: 1px;
+    padding-left: 8px;
+}}
+QPushButton#workspaceButton {{
+    background-color: {c['soft']};
+    border: 1px solid {c['card_border']};
+    border-radius: 8px;
+    padding: 8px 10px;
+    min-height: 28px;
+    text-align: left;
+    color: {c['ink']};
+    font-size: 12px;
+    font-weight: 600;
+}}
+QPushButton#workspaceButton:hover {{ background-color: {c['lilac']}; }}
+
+/* Pipeline rows (kept the StepButton / StepButtonActive class names) */
+QPushButton.StepButton, QPushButton.StepButtonActive {{
+    background-color: transparent;
+    color: {c['ink']};
+    border: none;
+    border-radius: 8px;
+    padding: 6px 8px;
+    min-height: 40px;
+    text-align: left;
+    font-size: 13px;
+    font-weight: 600;
+}}
+QPushButton.StepButton:hover {{ background-color: {c['soft']}; }}
+QPushButton.StepButtonActive {{ background-color: {c['selected_row']}; }}
+
+QFrame#userCard {{
+    background: transparent;
+    border: none;
+    border-top: 1px solid {c['card_border']};
+}}
+QLabel#userAvatar {{
+    background-color: {c['pink']};
+    color: {c['teal']};
+    border-radius: 16px;
+    min-width: 32px; max-width: 32px;
+    min-height: 32px; max-height: 32px;
+    font-weight: 700;
+    font-size: 13px;
+}}
+QLabel#userName {{
+    font-size: 13px;
+    font-weight: 600;
+    color: {c['ink']};
+}}
+QLabel#userBadge {{
+    color: {c['muted']};
+    font-size: 12px;
+}}
+
+/* ========================================================= */
+/* Page header                                               */
+/* ========================================================= */
+QLabel#pageCrumb {{
+    font-size: 13px;
+    color: {c['muted']};
+}}
+QLabel#pageTitle {{
+    font-size: 26px;
+    font-weight: 700;
+    color: {c['ink']};
+}}
+QLabel#guideLabel {{
+    font-size: 14px;
+    color: {c['muted']};
+}}
 QLabel#appTitleLabel {{
     font-size: 21px;
-    font-weight: 600;
+    font-weight: 700;
     color: {c['ink']};
 }}
 QLabel#greetingTitle {{
     font-size: 24px;
-    font-weight: 600;
+    font-weight: 700;
     color: {c['ink']};
 }}
 QLabel#greetingSubtitle {{
     font-size: 14px;
-    font-weight: 500;
     color: {c['muted']};
-}}
-QLabel#userBadge {{
-    color: {c['muted']};
-    font-weight: 600;
-    font-size: 12px;
 }}
 QPushButton#circleNavButton, QLabel.CircleBadge {{
     background-color: #ffffff;
-    border: 1px solid {c['card_border']};
-    border-radius: 5px;
+    border: 1px solid {c['line']};
+    border-radius: 8px;
     min-width: 44px; min-height: 44px;
     max-width: 44px; max-height: 44px;
     padding: 0px;
 }}
 QPushButton#circleNavButton:hover {{ background-color: {c['soft']}; }}
 
-/* Round arrow badge (→ in the corner of choice cards) */
-QLabel.ArrowBadgePink {{
-    background-color: rgba(255, 255, 255, 0.55);
-    color: {c['ink']};
-    border-radius: 4px;
+/* Status pill (replaces the old mascot) */
+QLabel#statusPill {{
+    border-radius: 11px;
+    padding: 3px 10px;
+    font-size: 12px;
+    font-weight: 600;
+}}
+
+QLabel.ArrowBadgePink, QLabel.ArrowBadgeNavy {{
+    background-color: {c['pink']};
+    color: {c['teal']};
+    border-radius: 8px;
     min-width: 36px; min-height: 36px;
     max-width: 36px; max-height: 36px;
     font-size: 17px;
     font-weight: 700;
 }}
-QLabel.ArrowBadgeNavy {{
-    background-color: rgba(255, 255, 255, 0.16);
-    color: #ffffff;
-    border-radius: 4px;
-    min-width: 36px; min-height: 36px;
-    max-width: 36px; max-height: 36px;
-    font-size: 17px;
-    font-weight: 700;
-}}
+
+/* Old stepper / guide containers (no longer shown, kept harmless) */
+QFrame.StepperContainer {{ background: transparent; border: none; }}
+QFrame.GuideBox {{ background: transparent; border: none; }}
 
 /* ========================================================= */
-/* Stepper buttons (restyled as underline tabs at the end)  */
-/* ========================================================= */
-QFrame.StepperContainer {{
-    background-color: transparent;
-    border: none;
-}}
-QPushButton.StepButton {{
-    background-color: rgba(255, 255, 255, 0.55);
-    color: {c['text']};
-    border: 1.5px solid #ffffff;
-    border-radius: 5px;
-    padding: 7px 12px;
-    min-height: 30px;
-    font-size: 12px;
-    font-weight: 600;
-    text-align: center;
-}}
-QPushButton.StepButton:hover {{
-    background-color: #ffffff;
-    color: {c['ink']};
-}}
-QPushButton.StepButtonActive {{
-    background-color: {c['pink']};
-    color: {c['ink']};
-    border: 1.5px solid {c['pink']};
-    border-radius: 5px;
-    padding: 7px 12px;
-    min-height: 30px;
-    font-size: 12px;
-    font-weight: 600;
-    text-align: center;
-}}
-
-/* Guide box (navy left bar override at the end) */
-QFrame.GuideBox {{
-    background-color: {c['pink']};
-    border: none;
-    border-radius: 5px;
-}}
-QLabel#guideLabel {{
-    color: {c['ink']};
-    font-weight: 600;
-    font-size: 12.5px;
-}}
-
-/* ========================================================= */
-/* Capsule tags                                              */
+/* Tags                                                      */
 /* ========================================================= */
 QLabel.TagPink, QLabel.TagYellow, QLabel.TagGreen, QLabel.TagBlue,
 QLabel.TagPurple, QLabel.TagNavy, QLabel.TagTeal {{
-    border-radius: 3px;
-    padding: 5px 16px;
-    font-weight: 700;
+    border-radius: 11px;
+    padding: 3px 10px;
+    font-weight: 600;
     font-size: 12px;
-    min-height: 18px;
+    min-height: 16px;
 }}
 QLabel.TagPink   {{ background-color: {c['pink']};   color: {c['pink_ink']}; }}
 QLabel.TagYellow {{ background-color: {c['lemon']};  color: {c['lemon_ink']}; }}
 QLabel.TagGreen  {{ background-color: {c['sage']};   color: {c['sage_ink']}; }}
 QLabel.TagBlue   {{ background-color: {c['sky']};    color: {c['sky_ink']}; }}
-QLabel.TagPurple {{ background-color: {c['lilac']};  color: {c['lilac_ink']}; }}
+QLabel.TagPurple {{ background-color: #f4f0ff;       color: #6941c6; }}
 QLabel.TagNavy   {{ background-color: {c['teal']};   color: #ffffff; }}
-QLabel.TagTeal   {{ background-color: {c['sky']};    color: {c['teal']}; }}
+QLabel.TagTeal   {{ background-color: {c['pink']};   color: {c['teal']}; }}
 
 /* ========================================================= */
 /* Cards                                                     */
@@ -340,12 +434,12 @@ QLabel.TagTeal   {{ background-color: {c['sky']};    color: {c['teal']}; }}
 QFrame.CardFrame, QWidget.CardFrame, QFrame.HeroQuoteCard {{
     background-color: {c['card']};
     border: 1px solid {c['card_border']};
-    border-radius: 6px;
+    border-radius: 12px;
 }}
 QFrame.SoftCard {{
     background-color: {c['soft']};
-    border: none;
-    border-radius: 4px;
+    border: 1px solid #eef0f3;
+    border-radius: 10px;
 }}
 QLabel#heroQuoteText {{
     font-size: 22px;
@@ -353,7 +447,7 @@ QLabel#heroQuoteText {{
     color: {c['ink']};
 }}
 QLabel#heroQuoteAuthor {{
-    font-size: 12.5px;
+    font-size: 13px;
     color: {c['muted']};
 }}
 QLabel.SectionTitle {{
@@ -363,75 +457,76 @@ QLabel.SectionTitle {{
 }}
 QLabel.MutedText {{
     color: {c['muted']};
-    font-weight: 600;
 }}
 QLabel.StatText {{
     color: {c['ink']};
     font-weight: 600;
 }}
 QLabel.RunPreview {{
-    color: {c['teal']};
-    font-weight: 700;
-    background: {c['sky']};
-    padding: 7px 14px;
-    border-radius: 3px;
+    color: {c['text']};
+    font-family: {MONO_STACK};
+    font-size: 12px;
+    background: {c['soft']};
+    border: 1px dashed {c['line']};
+    padding: 8px 12px;
+    border-radius: 8px;
 }}
 
-/* Choice cards — light (ChoiceCardPink) & navy (ChoiceCardNavy) */
+/* Choice cards — selectable option cards (format, source, …) */
 QFrame.ChoiceCardPink {{
-    background-color: {c['pink']};
-    border: none;
-    border-radius: 6px;
+    background-color: #ffffff;
+    border: 1px solid {c['line']};
+    border-radius: 10px;
 }}
-QFrame.ChoiceCardPink:hover {{ background-color: {c['pink_hover']}; }}
+QFrame.ChoiceCardPink:hover {{ background-color: {c['soft']}; }}
 QFrame.ChoiceCardNavy {{
-    background-color: {c['teal']};
-    border: none;
-    border-radius: 6px;
+    background-color: #f5f6ff;
+    border: 2px solid {c['teal']};
+    border-radius: 10px;
 }}
-QFrame.ChoiceCardNavy:hover {{ background-color: {c['teal_hover']}; }}
-
-/* Text inside choice cards follows the card, so swapping classes recolours everything */
-QFrame.ChoiceCardNavy QLabel, QFrame.ChoiceCardNavy QRadioButton {{ color: #ffffff; }}
-QFrame.ChoiceCardNavy QLabel.ChoiceSubNavy, QFrame.ChoiceCardNavy QLabel.ChoiceSubPink {{ color: #b8c7db; }}
+QFrame.ChoiceCardNavy QLabel, QFrame.ChoiceCardNavy QRadioButton,
 QFrame.ChoiceCardPink QLabel, QFrame.ChoiceCardPink QRadioButton {{ color: {c['ink']}; }}
-QFrame.ChoiceCardPink QLabel.ChoiceSubPink, QFrame.ChoiceCardPink QLabel.ChoiceSubNavy {{ color: {c['pink_ink']}; }}
+QFrame.ChoiceCardNavy QLabel.ChoiceSubNavy, QFrame.ChoiceCardNavy QLabel.ChoiceSubPink,
+QFrame.ChoiceCardPink QLabel.ChoiceSubPink, QFrame.ChoiceCardPink QLabel.ChoiceSubNavy {{ color: {c['muted']}; }}
 
 QLabel.ChoiceTitleNavy, QLabel.ChoiceTitlePink {{
     font-size: 15px;
     font-weight: 600;
 }}
 QLabel.ChoiceSubNavy, QLabel.ChoiceSubPink {{
-    font-size: 12px;
+    font-size: 13px;
 }}
 QFrame.ChoiceCardNavy QRadioButton, QFrame.ChoiceCardPink QRadioButton {{
-    font-weight: 700;
+    font-weight: 600;
     background: transparent;
 }}
 
 /* ========================================================= */
-/* Inputs        */
+/* Inputs                                                    */
 /* ========================================================= */
 QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox {{
-    background-color: {c['soft']};
+    background-color: #ffffff;
     color: {c['ink']};
-    border: 1.5px solid {c['soft']};
-    border-radius: 4px;
-    padding: 6px 16px;
+    border: 1px solid {c['line']};
+    border-radius: 8px;
+    padding: 7px 12px;
     min-height: 24px;
     selection-background-color: {c['pink_strong']};
     selection-color: {c['ink']};
     font-size: 13px;
 }}
 QLineEdit:hover, QComboBox:hover, QSpinBox:hover, QDoubleSpinBox:hover {{
-    border-color: {c['line']};
+    border-color: {c['faint']};
 }}
 QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus {{
-    border: 1.5px solid {c['teal']};
-    background-color: #ffffff;
+    border: 1px solid {c['teal']};
 }}
 QLineEdit:disabled, QComboBox:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled {{
     color: {c['faint']};
+    background-color: {c['soft']};
+}}
+QLineEdit:read-only {{
+    background-color: {c['soft']};
 }}
 QComboBox::drop-down {{
     subcontrol-origin: padding;
@@ -443,22 +538,22 @@ QComboBox::down-arrow {{
     image: url({assets}/chevron_down.svg);
     width: 12px;
     height: 12px;
-    margin-right: 12px;
+    margin-right: 10px;
 }}
 QComboBox QAbstractItemView {{
     background-color: #ffffff;
     color: {c['ink']};
     border: 1px solid {c['card_border']};
-    border-radius: 3px;
-    selection-background-color: {c['pink']};
+    border-radius: 8px;
+    selection-background-color: {c['selected_row']};
     selection-color: {c['ink']};
     outline: none;
-    padding: 6px;
+    padding: 4px;
 }}
 QSpinBox::up-button, QDoubleSpinBox::up-button {{
     subcontrol-origin: border;
     subcontrol-position: top right;
-    width: 24px;
+    width: 22px;
     border: none;
     background: transparent;
     margin-top: 3px;
@@ -467,7 +562,7 @@ QSpinBox::up-button, QDoubleSpinBox::up-button {{
 QSpinBox::down-button, QDoubleSpinBox::down-button {{
     subcontrol-origin: border;
     subcontrol-position: bottom right;
-    width: 24px;
+    width: 22px;
     border: none;
     background: transparent;
     margin-bottom: 3px;
@@ -485,35 +580,34 @@ QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {{
 }}
 
 /* ========================================================= */
-/* Buttons                                           */
+/* Buttons                                                   */
 /* ========================================================= */
 QPushButton {{
     background-color: #ffffff;
     color: {c['ink']};
-    border: 1.5px solid {c['line']};
-    border-radius: 4px;
-    padding: 7px 18px;
+    border: 1px solid {c['line']};
+    border-radius: 8px;
+    padding: 8px 16px;
     min-height: 22px;
-    font-weight: 700;
-    font-size: 12.5px;
+    font-weight: 600;
+    font-size: 13px;
 }}
 QPushButton:hover {{
     background-color: {c['soft']};
-    border-color: {c['faint']};
 }}
-QPushButton:pressed {{ background-color: {c['line']}; }}
+QPushButton:pressed {{ background-color: {c['lilac']}; }}
 QPushButton:disabled {{
     color: {c['faint']};
     background-color: {c['soft']};
-    border-color: {c['soft']};
+    border-color: {c['card_border']};
 }}
 
 QPushButton.PrimaryButton, QPushButton.StepNavButton {{
     background-color: {c['teal']};
     color: #ffffff;
     border: none;
-    border-radius: 4px;
-    padding: 9px 24px;
+    border-radius: 8px;
+    padding: 9px 20px;
     min-height: 22px;
     font-weight: 600;
     font-size: 13px;
@@ -521,96 +615,66 @@ QPushButton.PrimaryButton, QPushButton.StepNavButton {{
 QPushButton.PrimaryButton:hover, QPushButton.StepNavButton:hover {{ background-color: {c['teal_hover']}; }}
 QPushButton.PrimaryButton:pressed, QPushButton.StepNavButton:pressed {{ background-color: {c['teal_press']}; }}
 QPushButton.PrimaryButton:disabled, QPushButton.StepNavButton:disabled {{
-    background-color: {c['line']};
+    background-color: {c['card_border']};
     color: {c['faint']};
 }}
 
-/* Secondary action button (muted) */
+/* Secondary action button */
 QPushButton.SuccessButton {{
-    background-color: {c['lilac']};
-    color: {c['lilac_ink']};
-    border: none;
-    border-radius: 4px;
-    padding: 9px 24px;
+    background-color: #ffffff;
+    color: {c['ink']};
+    border: 1px solid {c['line']};
+    border-radius: 8px;
+    padding: 9px 20px;
     min-height: 22px;
     font-weight: 600;
     font-size: 13px;
 }}
-QPushButton.SuccessButton:hover {{ background-color: #cdc0f1; }}
-QPushButton.SuccessButton:pressed {{ background-color: #bfb0ec; }}
-QPushButton.SuccessButton:disabled {{ background-color: {c['line']}; color: {c['faint']}; }}
+QPushButton.SuccessButton:hover {{ background-color: {c['soft']}; }}
+QPushButton.SuccessButton:pressed {{ background-color: {c['lilac']}; }}
+QPushButton.SuccessButton:disabled {{ background-color: {c['soft']}; color: {c['faint']}; }}
 
 QPushButton.DangerButton {{
     background-color: {c['rose']};
     color: #ffffff;
     border: none;
-    border-radius: 4px;
-    padding: 9px 24px;
+    border-radius: 8px;
+    padding: 9px 20px;
     min-height: 22px;
     font-weight: 600;
     font-size: 13px;
 }}
 QPushButton.DangerButton:hover {{ background-color: {c['rose_hover']}; }}
-QPushButton.DangerButton:disabled {{ background-color: {c['line']}; color: {c['faint']}; }}
+QPushButton.DangerButton:disabled {{ background-color: {c['card_border']}; color: {c['faint']}; }}
 
 QPushButton.SecondaryNavButton {{
     background-color: #ffffff;
     color: {c['ink']};
-    border: 1.5px solid {c['line']};
-    border-radius: 4px;
-    padding: 8px 20px;
+    border: 1px solid {c['line']};
+    border-radius: 8px;
+    padding: 8px 16px;
     min-height: 22px;
-    font-weight: 700;
-    font-size: 12.5px;
+    font-weight: 600;
+    font-size: 13px;
 }}
-QPushButton.SecondaryNavButton:hover {{
-    background-color: {c['pink']};
-    border-color: {c['pink']};
-}}
+QPushButton.SecondaryNavButton:hover {{ background-color: {c['soft']}; }}
 QPushButton.SecondaryNavButton:disabled {{
     background-color: transparent;
     color: {c['faint']};
-    border-color: {c['line']};
+    border-color: {c['card_border']};
 }}
 
 /* ========================================================= */
-/* Footer — numbered step boxes        */
+/* Footer — previous / next                                  */
 /* ========================================================= */
 QFrame#bottomNavFooter {{
-    background-color: #ffffff;
-    border: 1px solid {c['card_border']};
-    border-radius: 6px;
-}}
-QPushButton.StepPill {{
-    background-color: #ffffff;
-    color: {c['ink']};
-    border: 1.5px solid {c['line']};
-    border-radius: 4px;
-    min-width: 38px; max-width: 38px;
-    min-height: 38px; max-height: 38px;
-    padding: 0px;
-    font-weight: 600;
-    font-size: 13px;
-}}
-QPushButton.StepPill:hover {{
-    background-color: {c['pink']};
-    border-color: {c['pink']};
-}}
-QPushButton.StepPillActive {{
-    background-color: {c['teal']};
-    color: #ffffff;
-    border: 1.5px solid {c['teal']};
-    border-radius: 4px;
-    min-width: 38px; max-width: 38px;
-    min-height: 38px; max-height: 38px;
-    padding: 0px;
-    font-weight: 600;
-    font-size: 13px;
+    background-color: transparent;
+    border: none;
+    border-top: 1px solid {c['card_border']};
 }}
 QLabel#stepIndicator {{
-    font-weight: 700;
     color: {c['muted']};
-    font-size: 12px;
+    font-size: 13px;
 }}
 
 /* ========================================================= */
@@ -622,47 +686,46 @@ QTableWidget, QTableView {{
     color: {c['ink']};
     gridline-color: transparent;
     border: 1px solid {c['card_border']};
-    border-radius: 4px;
+    border-radius: 10px;
     selection-background-color: {c['pink']};
     selection-color: {c['ink']};
-    font-size: 12.5px;
-    padding: 4px;
+    font-size: 13px;
+    padding: 0px;
 }}
 QTableWidget::item, QTableView::item {{
-    padding: 4px 8px;
-    border-bottom: 1px solid {c['soft']};
+    padding: 6px 10px;
+    border-bottom: 1px solid #eef0f3;
 }}
 QHeaderView {{ background: transparent; }}
 QHeaderView::section {{
     background-color: {c['soft']};
     color: {c['muted']};
-    padding: 8px 12px;
+    padding: 8px 10px;
     min-height: 22px;
     border: none;
-    font-weight: 700;
+    border-bottom: 1px solid {c['card_border']};
+    font-weight: 600;
     font-size: 12px;
 }}
-QHeaderView::section:first {{ border-top-left-radius: 3px; border-bottom-left-radius: 3px; }}
-QHeaderView::section:last  {{ border-top-right-radius: 3px; border-bottom-right-radius: 3px; }}
 QTableCornerButton::section {{ background: transparent; border: none; }}
 
 /* ========================================================= */
-/* Progress — single navy bar    */
+/* Progress                                                  */
 /* ========================================================= */
 QProgressBar {{
-    background-color: {c['soft']};
+    background-color: {c['lilac']};
     border: none;
-    border-radius: 3px;
+    border-radius: 6px;
     text-align: center;
     color: {c['ink']};
-    font-weight: 700;
-    font-size: 11.5px;
-    min-height: 22px;
-    max-height: 22px;
+    font-weight: 600;
+    font-size: 12px;
+    min-height: 20px;
+    max-height: 20px;
 }}
 QProgressBar::chunk {{
     background: {c['teal']};
-    border-radius: 3px;
+    border-radius: 6px;
 }}
 
 /* ========================================================= */
@@ -672,40 +735,44 @@ QCheckBox, QRadioButton {{
     color: {c['ink']};
     spacing: 8px;
     font-size: 13px;
-    font-weight: 600;
     min-height: 22px;
     background: transparent;
 }}
 QCheckBox::indicator, QRadioButton::indicator {{
-    width: 18px;
-    height: 18px;
-    border: 1.5px solid {c['faint']};
-    border-radius: 3px;
+    width: 16px;
+    height: 16px;
+    border: 1px solid {c['line']};
+    border-radius: 4px;
     background-color: #ffffff;
 }}
-QRadioButton::indicator {{ border-radius: 10px; }}   /* radios stay round (18px + border) */
+QRadioButton::indicator {{ border-radius: 9px; }}
 QCheckBox::indicator:hover, QRadioButton::indicator:hover {{ border-color: {c['teal']}; }}
-QCheckBox::indicator:checked, QRadioButton::indicator:checked {{
+QCheckBox::indicator:checked {{
     background-color: {c['teal']};
-    border: 4px solid {c['pink']};
+    border: 1px solid {c['teal']};
+    image: url({check});
 }}
 QRadioButton::indicator:checked {{
-    background-color: {c['teal']};
-    border: 2px solid {c['teal']};
-    border-radius: 11px;
+    width: 8px;
+    height: 8px;
+    background-color: #ffffff;
+    border: 5px solid {c['teal']};
+    border-radius: 9px;
 }}
-QFrame.ChoiceCardNavy QRadioButton::indicator {{ border-color: #ffffff; background: transparent; }}
-QFrame.ChoiceCardNavy QRadioButton::indicator:checked {{ background: #ffffff; border: 2px solid #ffffff; border-radius: 11px; }}
+QCheckBox::indicator:disabled, QRadioButton::indicator:disabled {{
+    background-color: {c['lilac']};
+    border-color: {c['card_border']};
+}}
 
 /* ========================================================= */
 /* Console / log                                             */
 /* ========================================================= */
 QPlainTextEdit, QTextEdit {{
     background-color: {c['teal_dark']};
-    color: #d6e2f0;
+    color: #d0d5dd;
     border: none;
-    border-radius: 4px;
-    font-family: 'Cascadia Code', 'Consolas', 'Courier New', monospace;
+    border-radius: 10px;
+    font-family: {MONO_STACK};
     font-size: 12px;
     padding: 10px;
     selection-background-color: {c['pink_strong']};
@@ -714,12 +781,12 @@ QPlainTextEdit, QTextEdit {{
 
 /* Test canvas */
 QFrame#testCanvas {{
-    background-color: {c['teal_dark']};
+    background-color: #eef0f3;
     border: none;
-    border-radius: 5px;
+    border-radius: 10px;
 }}
 QLabel#testPreview {{
-    color: #8fa1b8;
+    color: {c['muted']};
     font-weight: 600;
 }}
 
@@ -727,43 +794,44 @@ QLabel#testPreview {{
 /* Sliders                                                   */
 /* ========================================================= */
 QSlider::groove:horizontal {{
-    height: 8px;
-    background: {c['soft']};
+    height: 6px;
+    background: {c['card_border']};
     border-radius: 3px;
 }}
 QSlider::sub-page:horizontal {{
-    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 {c['pink_strong']}, stop:1 {c['lavender_bar']});
+    background: {c['teal']};
     border-radius: 3px;
 }}
 QSlider::handle:horizontal {{
-    background: {c['teal']};
-    border: 3px solid #ffffff;
+    background: #ffffff;
+    border: 2px solid {c['teal']};
     width: 14px;
     height: 14px;
     margin: -6px 0;
-    border-radius: 10px;   /* round handle */
+    border-radius: 9px;
 }}
-QSlider::handle:horizontal:hover {{ background: {c['teal_hover']}; }}
+QSlider::handle:horizontal:hover {{ background: {c['pink']}; }}
 
 /* ========================================================= */
-/* GroupBox                                                  */
+/* GroupBox — renders like a card with a plain title         */
 /* ========================================================= */
 QGroupBox {{
     border: 1px solid {c['card_border']};
-    border-radius: 5px;
-    margin-top: 16px;
-    padding: 18px 12px 10px 12px;
-    font-weight: 700;
+    border-radius: 12px;
+    margin-top: 14px;
+    padding: 22px 16px 14px 16px;
+    font-weight: 600;
+    font-size: 14px;
     color: {c['ink']};
     background-color: #ffffff;
 }}
 QGroupBox::title {{
     subcontrol-origin: margin;
-    left: 18px;
-    padding: 3px 12px;
-    background-color: {c['lilac']};
-    color: {c['lilac_ink']};
-    border-radius: 3px;
+    left: 16px;
+    top: 4px;
+    padding: 0px 6px;
+    background-color: #ffffff;
+    color: {c['ink']};
 }}
 
 /* ========================================================= */
@@ -782,7 +850,7 @@ QScrollBar:vertical {{
     margin: 4px 2px;
 }}
 QScrollBar::handle:vertical {{
-    background: #c3ccd8;
+    background: {c['line']};
     min-height: 30px;
     border-radius: 3px;
 }}
@@ -795,44 +863,13 @@ QScrollBar:horizontal {{
     margin: 2px 4px;
 }}
 QScrollBar::handle:horizontal {{
-    background: #c3ccd8;
+    background: {c['line']};
     min-width: 30px;
     border-radius: 3px;
 }}
 QScrollBar::handle:horizontal:hover {{ background: {c['faint']}; }}
 QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ width: 0px; }}
 QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{ background: transparent; }}
-/* ========================================================= */
-/* Enterprise overrides — underline step tabs, Tip left bar   */
-/* ========================================================= */
-QFrame.StepperContainer {{
-    background: {c['card']};
-    border: 1px solid {c['card_border']};
-    border-radius: 4px;
-}}
-QPushButton.StepButton {{
-    background: transparent;
-    border: none;
-    border-bottom: 3px solid transparent;
-    border-radius: 0px;
-    color: {c['muted']};
-}}
-QPushButton.StepButton:hover {{
-    background: {c['pink']};
-    color: {c['ink']};
-}}
-QPushButton.StepButtonActive {{
-    background: {c['card']};
-    border: none;
-    border-bottom: 3px solid {c['teal']};
-    border-radius: 0px;
-    color: {c['teal']};
-}}
-QFrame.GuideBox {{
-    background: {c['card']};
-    border: 1px solid {c['card_border']};
-    border-left: 4px solid {c['teal']};
-}}
 """
 
 
