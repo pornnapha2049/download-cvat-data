@@ -16,7 +16,19 @@ Features:
 - Aesthetic Printable Stickers & Study Stationery Theme (.☘︎ ݁˖) with animated dancing mascot
 """
 
+import os
 import sys
+
+# Prevent OpenCV's bundled Qt plugins from conflicting with PyQt5's xcb platform plugin
+os.environ.pop("QT_QPA_PLATFORM_PLUGIN_PATH", None)
+try:
+    from PyQt5.QtCore import QLibraryInfo
+    _plugin_path = QLibraryInfo.location(QLibraryInfo.PluginsPath)
+    if _plugin_path and os.path.exists(_plugin_path):
+        os.environ["QT_QPA_PLATFORM_PLUGIN_PATH"] = _plugin_path
+except Exception:
+    pass
+
 from PyQt5.QtWidgets import QApplication
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QFont

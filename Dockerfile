@@ -7,7 +7,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
     QT_X11_NO_MITSHM=1 \
     DISPLAY=:99 \
     RESOLUTION=1600x950 \
-    WEB_GUI=true
+    WEB_GUI=true \
+    QT_QPA_PLATFORM_PLUGIN_PATH=/usr/local/lib/python3.10/site-packages/PyQt5/Qt5/plugins
 
 # Install system dependencies:
 # 1. Qt5 & GUI runtime libraries
