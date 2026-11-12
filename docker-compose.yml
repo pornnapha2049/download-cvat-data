@@ -8,7 +8,7 @@ services:
     image: cvat-yolo-studio:latest
     container_name: cvat-yolo-studio
     ports:
-      - "6080:6080" # Web GUI (noVNC): Open http://localhost:6080 in any web browser
+      - "8081:6080" # Web GUI (noVNC): Open http://localhost:8081 or http://1.10.131.222:8081
       - "5900:5900" # Optional direct VNC viewer
     environment:
       - WEB_GUI=true
@@ -30,7 +30,7 @@ services:
     container_name: cvat-yolo-studio-gpu
     profiles: ["gpu"]
     ports:
-      - "6080:6080"
+      - "8081:6080"
     environment:
       - WEB_GUI=true
       - RESOLUTION=1600x950

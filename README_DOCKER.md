@@ -16,7 +16,7 @@ docker compose up -d
 ```
 
 เมื่อ Container รันเสร็จแล้ว สามารถเปิดใช้งานโปรแกรมผ่านเว็บเบราว์เซอร์ได้ทันที:
-👉 **[http://localhost:6080](http://localhost:6080)**
+👉 **[http://localhost:8081](http://localhost:8081)** หรือ **http://1.10.131.222:8081** (สำหรับเครื่องในวง LAN)
 
 ---
 
