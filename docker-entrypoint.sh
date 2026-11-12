@@ -44,6 +44,9 @@ else
     echo " Running with host DISPLAY=${DISPLAY}"
 fi
 
+# Ensure stray OpenCV Qt plugins never hijack PyQt5's xcb plugin
+rm -rf /usr/local/lib/python*/site-packages/cv2/qt 2>/dev/null || true
+
 # Run the Python application or passed command
 if [ $# -gt 0 ]; then
     exec "$@"

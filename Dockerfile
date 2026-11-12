@@ -36,6 +36,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxcb-xfixes0 \
     libxcb-xinerama0 \
     libxcb-xinput0 \
+    libxcb-cursor0 \
+    libxcb-xtest0 \
+    libxi6 \
+    libxrender1 \
     libfontconfig1 \
     libdbus-1-3 \
     fonts-dejavu-core \
@@ -62,7 +66,10 @@ RUN if [ -d /usr/share/novnc ]; then \
 # Copy requirements and install Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+    pip install --no-cache-dir -r requirements.txt && \
+    pip uninstall -y opencv-python && \
+    pip install --no-cache-dir --force-reinstall "opencv-python-headless>=4.8.0" && \
+    rm -rf /usr/local/lib/python*/site-packages/cv2/qt
 
 # Copy application source code
 COPY core/ ./core/

@@ -17,17 +17,18 @@ Features:
 """
 
 import os
+import shutil
 import sys
 
-# Prevent OpenCV's bundled Qt plugins from conflicting with PyQt5's xcb platform plugin
+# Remove any OpenCV bundled Qt plugins that crash PyQt5's xcb platform plugin
 os.environ.pop("QT_QPA_PLATFORM_PLUGIN_PATH", None)
-try:
-    from PyQt5.QtCore import QLibraryInfo
-    _plugin_path = QLibraryInfo.location(QLibraryInfo.PluginsPath)
-    if _plugin_path and os.path.exists(_plugin_path):
-        os.environ["QT_QPA_PLATFORM_PLUGIN_PATH"] = _plugin_path
-except Exception:
-    pass
+for _dir in sys.path + ["/usr/local/lib/python3.10/site-packages"]:
+    _bad_cv2_qt = os.path.join(_dir, "cv2", "qt")
+    if os.path.exists(_bad_cv2_qt):
+        try:
+            shutil.rmtree(_bad_cv2_qt)
+        except Exception:
+            pass
 
 from PyQt5.QtWidgets import QApplication
 from PyQt5.QtCore import Qt
