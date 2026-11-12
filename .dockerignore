@@ -1,19 +1,35 @@
+# Git & IDEs
 .git
 .gitignore
+.idea
+.vscode
+*.swp
+*.swo
+
+# Python caches & virtual environments
 __pycache__
-*.pyc
-*.pyo
-*.pyd
+*.py[cod]
+*$py.class
 .pytest_cache
 venv
 .venv
 env
 ENV
-data/
-runs/
-models/*.pt
-weights/
+
+# Heavy Model Weights & Exported Models (should be mounted via volumes)
+*.pt
 *.onnx
 *.engine
-.idea
-.vscode
+weights/
+models/
+
+# Dataset & Output Directories (should be mounted via volumes)
+data/
+runs/
+downloads/
+merged/
+dataset/
+
+# Documentation & Host-only files
+*.md
+docker-compose.yml
